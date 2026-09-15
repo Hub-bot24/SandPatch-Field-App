@@ -55,7 +55,7 @@ export async function compressImageFile(
   }
 }
 
-function scaleDimensions(
+export function scaleDimensions(
   width: number,
   height: number,
   maxDimension: number,
@@ -71,13 +71,14 @@ function scaleDimensions(
   };
 }
 
-interface DrawableImage {
+export interface DrawableImage {
   image: CanvasImageSource & { width?: number; height?: number };
   width: number;
   height: number;
 }
 
-async function loadDrawableImage(file: Blob): Promise<DrawableImage> {
+/** Decodes a photo Blob into a drawable image, shared by compression and grayscale-image extraction (lib/images/grayscale.ts) so both use the same decode fallback (createImageBitmap, then an <img> element). */
+export async function loadDrawableImage(file: Blob): Promise<DrawableImage> {
   if (typeof createImageBitmap === "function") {
     try {
       const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });

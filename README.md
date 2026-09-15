@@ -5,33 +5,43 @@ data in the field during road surfacing QA. Version 1 is fully offline after
 first load, stores everything locally (job setup, records, photos) in
 IndexedDB, and has no backend and no third-party data collection.
 
-Diameters are captured with **tap-to-measure**: the operator taps a ruler's
-two ends and the sand patch's two edges directly on the just-taken photo,
-and the app does the pixel-to-mm arithmetic - nobody has to read a ruler
-mark in the field and type a number. This is not computer vision; every
-point is a deliberate human tap, so there is nothing for it to get wrong on
-its own (see "Tap-to-measure" below). Fully-automatic edge *detection* (no
-taps at all) is a separate, still-unbuilt Version 2 placeholder
-(`SandPatchMeasurementEngine`, returns `NOT_IMPLEMENTED`) - do not build
-that until Version 1 is stable in real field use.
+Diameters are captured with **automatic measurement**: after a one-time
+camera calibration (take one photo of your ruler, tap its two ends -
+never repeated after that), every "Take All 4 Photos" run measures the
+sand patch in each photo by itself - no taps, no per-test setup. This is
+real image segmentation (Otsu's method, a standard thresholding
+algorithm - see "Automatic measurement" below), not a black box: every
+result is visible on-screen immediately, so a bad read is never hidden,
+and every diameter field stays a plain editable number in case one needs
+correcting by hand. **Tap-to-measure** (tap a ruler and the patch edges
+directly on a photo) remains available as a manual fallback for any
+single photo where the automatic reading looks wrong. A separate, larger
+Version 2 placeholder - automatically finding *and* calibrating against
+two perpendicular rulers, with perspective correction, needing no manual
+calibration step at all (`SandPatchMeasurementEngine`, returns
+`NOT_IMPLEMENTED`) - remains deliberately unbuilt; do not build that until
+Version 1 is stable in real field use.
 
 ## Main workflow
 
 1. **Job Setup** (`/job`) - road, contract/job number, lot number, operator,
    existing/proposed aggregate size, default sand volume, ruler length (the
-   tap-to-measure calibration constant, default 300mm). Saved once, prefills
-   every new record.
+   tap-to-measure fallback's calibration constant, default 300mm), and
+   **Calibrate Camera** (take one photo of the ruler, tap its two ends -
+   the one-time reference automatic measurement scales every reading
+   against). Saved once, prefills every new record.
 2. **New Test** (`/`) - the main field screen. Road, chainage, direction,
    offset, control line, GPS, four photos, four diameters, live average
    diameter + texture depth, notes, Save Record. "Take All 4 Photos" drives
-   the camera through all four shots back-to-back, opening tap-to-measure
-   after each one so the diameter fills in as you go; each Photo/Diameter
-   step also has its own "Measure from Photo" button for a standalone
-   re-measure, and every diameter field stays a plain editable number so a
-   tap-measured value can always be corrected by hand. After saving, the
-   form resets for the next test but keeps road/direction/control
-   line/sand volume so a run of consecutive tests along a road needs
-   minimal retyping.
+   the camera through all four shots back-to-back, measuring each one
+   automatically with no taps; if the camera hasn't been calibrated for
+   this job yet, it prompts that one-time calibration inline first, then
+   continues straight into the four photos. Each Photo/Diameter step also
+   has its own "Measure from Photo" button for a manual tap-to-measure
+   fallback, and every diameter field stays a plain editable number so any
+   reading can always be corrected by hand. After saving, the form resets
+   for the next test but keeps road/direction/control line/sand volume so
+   a run of consecutive tests along a road needs minimal retyping.
 3. **Records** (`/records`) - all saved records, sorted by road then
    chainage ascending. Tap a card to view, edit, or delete (with
    confirmation) a record.
@@ -61,7 +71,7 @@ app/                  Routes (App Router, static export). No API routes.
 components/ui/        Generic primitives (Button, NumericField, SegmentedControl, ...)
 components/record/    Record form, list, card, detail view
 components/gps/       GPS capture control
-components/photo/     Camera capture slot, tap-to-measure overlay
+components/photo/     Camera capture slot, camera calibration + tap-to-measure overlays
 components/job/       Job Setup form
 components/export/    Export panel
 components/status/    Status/GPS/online pills and badges
@@ -70,9 +80,9 @@ components/pwa/       Service worker registration
 lib/db/               IndexedDB (via idb): schema + versioned migrations, repositories
 lib/calculations/     Average diameter, texture depth, READY/INCOMPLETE, formatting
 lib/gps/              Geolocation wrapper + GOOD/CHECK/POOR classification
-lib/images/           Camera photo compression (resize + re-encode to JPEG)
+lib/images/           Camera photo compression, photo -> grayscale pixel extraction
 lib/export/           CSV, filename sanitisation/naming, ZIP, Excel lab form writer
-lib/measurement/      tap-to-measure geometry (Version 1) + engine placeholder (Version 2)
+lib/measurement/      automatic detection + tap-to-measure geometry (Version 1), engine placeholder (Version 2)
 lib/validation/       Field validation (chainage/diameter/offset)
 types/                Job, SandPatchRecord, PhotoRecord, measurement types
 tests/                Vitest unit tests
@@ -93,28 +103,60 @@ an additive `upgrade()` migration function. Future versions add
 `if (oldVersion < N)` blocks that create/extend stores - never drop a store
 or clear data.
 
-### Tap-to-measure
+### Automatic measurement
 
-`lib/measurement/tapMeasure.ts`'s `computeTapMeasurement()` converts four
-tapped points into a diameter: the operator taps the two ends of a ruler
-laid across the sand patch (a known real-world distance - the "Ruler
-Length" set in Job Setup, default 300mm) to establish a pixels-per-mm
-scale, then the two patch edges along that same line. Edge taps are
-projected onto the calibration axis, so a tap that's a few pixels off the
-ruler's exact line still measures correctly along it. `MIN_CALIBRATION_PIXELS`
-guards the one way this could go obviously wrong (two calibration taps on
-the same spot) by returning `null` instead of a wild, divide-by-near-zero
-number.
+`lib/measurement/autoDetect.ts`'s `detectPatchDiameter()` finds the sand
+patch by contrast against the pavement and measures it - no taps, no
+per-photo setup. It uses Otsu's method (a standard, deterministic
+thresholding algorithm - not a guess) to binarize the photo, finds the
+largest connected region that's reasonably centred in frame (an explicit-
+stack flood fill - never recursive, since a real patch photo produces one
+large contiguous region), and reports its equivalent-circle diameter
+(`2 * sqrt(area / pi)`, which tolerates an imperfectly circular edge
+better than a single width measurement would). Every result carries a
+`confidence` (how cleanly one clean, central, roughly circular region
+separated out) - purely informational, never a gate: a result is only
+ever `null` when no usable region exists at all (e.g. a blank or
+fully-uniform photo), and even then the diameter field is simply left
+empty for manual entry rather than a fabricated number appearing.
+
+This still needs exactly one real-world reference to turn pixels into
+millimetres - a photo alone can never carry an absolute scale on its own,
+only a ruler (or a known camera-to-ground distance) can. That reference is
+`Job.pixelsPerMm`, established once via **Calibrate Camera** in Job Setup
+(or inline, automatically, the first time "Take All 4 Photos" is used on a
+job that hasn't been calibrated yet) and reused for every reading
+afterwards - never re-derived per photo or per test.
+`lib/images/grayscale.ts` decodes each photo into a small (400px) grayscale
+buffer first - detection measures pixel *area*, not fine edge detail, so
+analysing at full photo resolution would only cost time, not add accuracy.
+
+This assumes the patch is lighter than the surrounding pavement (true for
+sand on a typical bitumen/asphalt seal) and reasonably centred in frame -
+see "Known limitations" below for what that means for a very different
+pavement colour, harsh shadows, or an off-centre shot.
+
+### Tap-to-measure (manual fallback)
+
+`lib/measurement/tapMeasure.ts`'s `computeTapMeasurement()` is the manual
+alternative when an automatic reading looks wrong: the operator taps the
+two ends of a ruler laid across the sand patch (a known real-world
+distance - the "Ruler Length" set in Job Setup, default 300mm) to
+establish a pixels-per-mm scale, then the two patch edges along that same
+line. Edge taps are projected onto the calibration axis, so a tap that's a
+few pixels off the ruler's exact line still measures correctly along it.
+`MIN_CALIBRATION_PIXELS` guards the one way this could go obviously wrong
+(two calibration taps on the same spot) by returning `null` instead of a
+wild, divide-by-near-zero number.
 
 This is deliberately not computer vision: `components/photo/TapMeasureOverlay.tsx`
 never detects anything itself, it only does the pixel-distance-to-mm
 arithmetic on points a human identified, so there is no confidence score or
 detection failure mode to reason about - the computed distance is always
 shown before it can be confirmed, and every diameter field stays a plain
-editable number afterwards. "Take All 4 Photos" on the New Test screen
-chains this through all four photos automatically (capture -> measure ->
-next photo); each Photo/Diameter step also has its own "Measure from
-Photo" button to re-measure a single already-taken photo standalone.
+editable number afterwards. Each Photo/Diameter step's "Measure from
+Photo" button opens this to re-measure a single already-taken photo by
+hand, standalone from the automatic guided capture.
 
 ### Excel lab form export
 
@@ -156,14 +198,16 @@ they simply have no corresponding field to draw from.
 `types/measurement.ts` defines the `SandPatchMeasurementEngine` interface
 and `MeasurementResult` shape (diameter1-4, averageDiameter, confidence,
 detectedBoundary, calibrationQuality, perspectiveCorrectionApplied,
-requiresManualReview) for a future *fully-automatic* pipeline - detecting
-the ruler and sand-patch edges from the photo itself, with no taps at all.
-This is a different, larger thing than tap-to-measure above (which is
-implemented) and remains deliberately unbuilt: `lib/measurement/notImplementedEngine.ts`
-is the only implementation and always returns `status: "NOT_IMPLEMENTED"` -
-it never fabricates diameters or a boundary from a photo. The New Test
-screen has a "Try Fully-Automatic Detection (Version 2 preview)" link that
-calls it, purely to show where this plugs in later.
+requiresManualReview) for a future pipeline that finds *and calibrates
+against* two perpendicular rulers automatically, with perspective
+correction, needing no manual calibration step at all - not even the
+one-time kind "Automatic measurement" above still requires. That one-time
+calibration step is the real, if narrow, gap between what's implemented
+now and this placeholder. `lib/measurement/notImplementedEngine.ts` is the
+only implementation and always returns `status: "NOT_IMPLEMENTED"` - it
+never fabricates diameters or a boundary from a photo. The New Test screen
+has a "Try Fully-Automatic Detection (Version 2 preview)" link that calls
+it, purely to show where this plugs in later.
 
 ## Local development
 
@@ -294,13 +338,25 @@ serves from its own root).
   not be exercised in this build environment - verification here used
   Playwright's file-input injection to exercise the same capture ->
   compress -> store -> preview pipeline a real photo takes.
-- **Tap-to-measure accuracy depends on the photo and the operator's taps**,
-  not on any app-side correction: the ruler must actually be visible along
-  the same line as the patch edges in the shot, the "Ruler Length" in Job
-  Setup must match the physical ruler in hand, and tap precision (use the
-  +/- zoom in the overlay) sets the achievable accuracy. There is no
-  perspective correction - a ruler photographed at a sharp angle will read
-  incorrectly, same as a human misreading an off-axis ruler would.
+- **Automatic measurement's accuracy depends on real contrast and a
+  reasonably consistent camera distance**, not on any app-side correction:
+  it needs the sand patch to actually look lighter than the surrounding
+  pavement (a very light-coloured concrete surface, harsh shadows cutting
+  across the patch, or a very washed-out/overexposed photo can all confuse
+  the threshold), and the patch reasonably centred in frame. The one-time
+  calibration assumes every future photo is taken from roughly the same
+  camera-to-ground distance as the calibration photo was - holding the
+  phone "about the same" by feel varies naturally, and that variation
+  becomes measurement error directly. There is no perspective correction
+  either. None of this is silent: every reading is shown on-screen
+  immediately, and "Measure from Photo" is always available to override a
+  reading by hand.
+- **Tap-to-measure (the manual fallback) accuracy depends on the photo and
+  the operator's taps**, not on any app-side correction: the ruler must
+  actually be visible along the same line as the patch edges in the shot,
+  the "Ruler Length" in Job Setup must match the physical ruler in hand,
+  and tap precision (use the +/- zoom in the overlay) sets the achievable
+  accuracy. There is no perspective correction here either.
 - **Geolocation permission handling** was verified with a deterministic
   stub (denied/unavailable/timeout all map to a clear on-screen message
   and never block Save); real-device permission-prompt UX will vary
