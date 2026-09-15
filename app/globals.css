@@ -1,0 +1,92 @@
+@import "tailwindcss";
+
+:root {
+  --color-paper: #f5f4f1;
+  --color-surface: #ffffff;
+  --color-ink: #14181c;
+  --color-ink-muted: #4b5563;
+  --color-border: #d8d3c8;
+
+  --color-brand: #c2410c;
+  --color-brand-dark: #9a3412;
+  --color-brand-contrast: #ffffff;
+
+  --color-navy: #101826;
+  --color-navy-light: #1c2839;
+
+  --color-good: #157a3d;
+  --color-good-bg: #e3f5e9;
+  --color-check: #a15c00;
+  --color-check-bg: #fdf0d9;
+  --color-poor: #b91c1c;
+  --color-poor-bg: #fbe4e4;
+  --color-neutral-bg: #e9e7e1;
+}
+
+@theme inline {
+  --color-paper: var(--color-paper);
+  --color-surface: var(--color-surface);
+  --color-ink: var(--color-ink);
+  --color-ink-muted: var(--color-ink-muted);
+  --color-border: var(--color-border);
+
+  --color-brand: var(--color-brand);
+  --color-brand-dark: var(--color-brand-dark);
+  --color-brand-contrast: var(--color-brand-contrast);
+
+  --color-navy: var(--color-navy);
+  --color-navy-light: var(--color-navy-light);
+
+  --color-good: var(--color-good);
+  --color-good-bg: var(--color-good-bg);
+  --color-check: var(--color-check);
+  --color-check-bg: var(--color-check-bg);
+  --color-poor: var(--color-poor);
+  --color-poor-bg: var(--color-poor-bg);
+  --color-neutral-bg: var(--color-neutral-bg);
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+}
+
+/* Field use is outdoors in direct sunlight: fixed high-contrast palette
+   regardless of system dark-mode preference, so readings stay legible. */
+html {
+  height: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  min-height: 100%;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+input,
+select,
+textarea,
+button {
+  font-family: inherit;
+}
+
+/* Large numeric inputs should never trigger iOS zoom-on-focus (needs >=16px). */
+input,
+select,
+textarea {
+  font-size: 16px;
+}
+
+.safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
