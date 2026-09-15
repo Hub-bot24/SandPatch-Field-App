@@ -71,9 +71,9 @@ export function ExportPanel() {
       </Card>
 
       <p className="text-sm text-ink-muted">
-        Exports a ZIP containing a CSV of every saved record and a photos folder, named
-        Road_Chainage_Direction_PhotoN.jpg. Nothing is uploaded anywhere - the file downloads directly to
-        this device.
+        Exports a ZIP containing a CSV of every saved record, the populated Sand Patch lab Excel form, and a
+        photos folder, named Road_Chainage_Direction_PhotoN.jpg. Nothing is uploaded anywhere - the file
+        downloads directly to this device.
       </p>
 
       <Button
