@@ -333,8 +333,12 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
 
     setAutoDetectBusy(photoNumber);
     try {
-      const grayscale = await blobToGrayscaleImage(file);
-      const result = detectPatchDiameter(grayscale, pixelsPerMm);
+      const { image: grayscale, scale } = await blobToGrayscaleImage(file);
+      // pixelsPerMm is calibrated against the original, full-resolution
+      // photo, but `grayscale` has been downsampled for fast analysis - it
+      // must be scaled down by the same factor, or every diameter comes
+      // out wrong by roughly (original size / analysis size).
+      const result = detectPatchDiameter(grayscale, pixelsPerMm * scale);
       if (result) {
         updateForm(diameterPatchFor(photoNumber, String(Math.round(result.diameterMm * 10) / 10)));
       }
@@ -595,6 +599,10 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
           {job?.pixelsPerMm
             ? "Take all four photos in one go - each diameter is measured automatically, no taps needed."
             : "Take all four photos in one go. First time: one quick ruler calibration, then every diameter measures automatically from then on - no taps needed."}
+        </p>
+        <p className="text-sm text-ink-muted">
+          Frame each shot the way you&rsquo;d lay a ruler across the patch: the patch centred in frame, with the
+          direction you&rsquo;re measuring running left-to-right.
         </p>
         <Button fullWidth onClick={startGuidedCapture} disabled={guidedCaptureActive}>
           {guidedCaptureActive

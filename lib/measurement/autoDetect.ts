@@ -1,24 +1,29 @@
 /**
- * Automatic sand-patch diameter detection: no taps, no per-photo
- * calibration. Finds the patch by contrast against the surrounding
- * pavement (Otsu's method - a standard, deterministic thresholding
- * algorithm, not a guess) and measures the resulting region.
+ * Automatic sand-patch diameter detection: measures along the photo's
+ * horizontal centerline, the same way a physical ruler laid across the
+ * patch would be read - rather than the overall size of the visible sand
+ * shape. This distinction matters: the real field method takes four
+ * separate readings at four different angles specifically to catch a
+ * patch that isn't perfectly round, and measuring "the whole shape's
+ * size" the same way regardless of angle would silently defeat the
+ * purpose of those four separate readings.
+ *
+ * Each edge along that line is found at its point of steepest contrast
+ * change (the discrete derivative's peak), not a single fixed brightness
+ * threshold - a real sand edge is often a gradual fade rather than a hard
+ * line, and the steepest-change point is a well-defined, repeatable
+ * target on a gradual transition in a way an arbitrary brightness cutoff
+ * isn't. This mirrors, digitally, the same problem a second ruler solves
+ * by hand at a fuzzy edge: turning an inherently unclear boundary into
+ * one specific, exact point to read.
  *
  * This still needs exactly one real-world reference to convert pixels to
  * millimetres - a photo alone can never carry an absolute scale, only a
  * ruler or a known camera-to-ground distance can. That reference is
  * `pixelsPerMm`, established once during camera calibration (see
- * types/job.ts's `pixelsPerMm` and the Job Setup calibration flow) and
- * reused for every photo afterwards - never re-derived per photo, and
- * never invented when it's missing (`detectPatchDiameter` requires it).
- *
- * This assumes the patch is lighter than the surrounding pavement (true
- * for sand on a typical bitumen/asphalt seal) and reasonably centred in
- * frame - see the module's known limitations in README.md. It is real
- * image segmentation, with real failure modes (poor contrast, harsh
- * shadows, an off-centre or very close-up shot), not a black box: every
- * result carries a `confidence` derived from how cleanly one region
- * separated out, so a bad read is visibly flagged rather than hidden.
+ * types/job.ts's `pixelsPerMm` and lib/measurement/ocrRuler.ts) and reused
+ * for every photo afterwards - never re-derived per photo, and never
+ * invented when it's missing (`detectPatchDiameter` requires it).
  */
 
 export interface GrayscaleImage {
@@ -31,194 +36,119 @@ export interface GrayscaleImage {
 export interface AutoDetectResult {
   diameterMm: number;
   diameterPixels: number;
-  areaPixels: number;
-  /** 0-1: how cleanly a single, roughly circular, centrally-placed region separated out. Not a hard gate - always inspect the number, never silently discarded. */
+  /** 0-1: how sharply the weaker of the two edges stood out against the background noise level. Not a hard gate - always inspect the number, never silently discarded. */
   confidence: number;
 }
 
-interface Component {
-  area: number;
-  centroidX: number;
-  centroidY: number;
-  boundingBox: { minX: number; minY: number; maxX: number; maxY: number };
-}
+/** Fraction of the image's height averaged into the horizontal profile, centred vertically - smooths sand-grain/JPEG noise without requiring the whole frame to be part of the patch. */
+const BAND_FRACTION = 0.16;
+/** Minimum brightness change (0-255 scale) between adjacent columns to trust as a real edge rather than noise. */
+const MIN_EDGE_MAGNITUDE = 6;
 
-/** Standard Otsu threshold: the intensity (0-255) that best splits the histogram into two populations by maximizing between-class variance. */
-export function computeOtsuThreshold(histogram: number[], totalPixels: number): number {
-  if (totalPixels === 0) return 128;
-
-  let sumAll = 0;
-  for (let i = 0; i < 256; i++) sumAll += i * histogram[i];
-
-  let sumForeground = 0;
-  let weightBackground = 0;
-  let bestVariance = -1;
-  let bestThreshold = 0;
-
-  for (let t = 0; t < 256; t++) {
-    weightBackground += histogram[t];
-    if (weightBackground === 0) continue;
-    const weightForeground = totalPixels - weightBackground;
-    if (weightForeground === 0) break;
-
-    sumForeground += t * histogram[t];
-    const meanBackground = sumForeground / weightBackground;
-    const meanForeground = (sumAll - sumForeground) / weightForeground;
-    const meanDiff = meanBackground - meanForeground;
-    const variance = weightBackground * weightForeground * meanDiff * meanDiff;
-
-    if (variance > bestVariance) {
-      bestVariance = variance;
-      bestThreshold = t;
-    }
-  }
-
-  return bestThreshold;
-}
-
-export function buildHistogram(image: GrayscaleImage): number[] {
-  const histogram = new Array(256).fill(0);
-  for (let i = 0; i < image.data.length; i++) {
-    histogram[image.data[i]]++;
-  }
-  return histogram;
-}
-
-/**
- * Finds every connected region (8-connectivity) of pixels on the
- * `foregroundIsBrighter` side of `threshold`, using an explicit-stack
- * flood fill (never recursive - a recursive fill would blow the call
- * stack on a large contiguous region, which a real sand patch photo
- * produces routinely).
- */
-function findComponents(image: GrayscaleImage, threshold: number, foregroundIsBrighter: boolean): Component[] {
+/** Averages a horizontal band of rows, centred vertically, into one brightness value per column. */
+function buildHorizontalProfile(image: GrayscaleImage): number[] {
   const { width, height, data } = image;
-  const visited = new Uint8Array(width * height);
-  const components: Component[] = [];
-  const stack: number[] = [];
+  const bandHeight = Math.max(1, Math.round(height * BAND_FRACTION));
+  const bandStart = Math.max(0, Math.floor((height - bandHeight) / 2));
+  const bandEnd = Math.min(height, bandStart + bandHeight);
+  const rowCount = bandEnd - bandStart;
 
-  const isForeground = (index: number) => (foregroundIsBrighter ? data[index] > threshold : data[index] < threshold);
-
-  for (let start = 0; start < width * height; start++) {
-    if (visited[start] || !isForeground(start)) continue;
-
-    let area = 0;
-    let sumX = 0;
-    let sumY = 0;
-    let minX = width;
-    let minY = height;
-    let maxX = 0;
-    let maxY = 0;
-
-    stack.push(start);
-    visited[start] = 1;
-
-    while (stack.length > 0) {
-      const index = stack.pop() as number;
-      const x = index % width;
-      const y = (index / width) | 0;
-
-      area++;
-      sumX += x;
-      sumY += y;
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          if (dx === 0 && dy === 0) continue;
-          const nx = x + dx;
-          const ny = y + dy;
-          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-          const nIndex = ny * width + nx;
-          if (visited[nIndex] || !isForeground(nIndex)) continue;
-          visited[nIndex] = 1;
-          stack.push(nIndex);
-        }
-      }
+  const profile = new Array<number>(width).fill(0);
+  for (let x = 0; x < width; x++) {
+    let sum = 0;
+    for (let y = bandStart; y < bandEnd; y++) {
+      sum += data[y * width + x];
     }
+    profile[x] = sum / rowCount;
+  }
+  return profile;
+}
 
-    components.push({
-      area,
-      centroidX: sumX / area,
-      centroidY: sumY / area,
-      boundingBox: { minX, minY, maxX, maxY },
-    });
+interface EdgePeak {
+  index: number;
+  magnitude: number;
+  meanMagnitude: number;
+}
+
+/** Near-equal gradient magnitudes (within this many grayscale levels) are treated as one plateau rather than distinct peaks - see findSteepestEdge. */
+const PLATEAU_TOLERANCE = 0.5;
+
+/**
+ * Finds the steepest brightness change within profile[start, end). A hard
+ * step has one clear peak; a gradual (near-linear) transition instead
+ * produces a plateau of tied-magnitude columns spanning the whole
+ * transition, so this takes the midpoint of that plateau rather than its
+ * first column - otherwise the detected edge would drift toward whichever
+ * end of a fuzzy transition the scan direction reaches first, rather than
+ * landing on the transition's actual centre.
+ */
+function findSteepestEdge(profile: number[], start: number, end: number): EdgePeak | null {
+  if (end - start < 2) return null;
+
+  const magnitudes: number[] = [];
+  let peakMagnitude = -1;
+  for (let x = start; x < end - 1; x++) {
+    const magnitude = Math.abs(profile[x + 1] - profile[x]);
+    magnitudes.push(magnitude);
+    if (magnitude > peakMagnitude) peakMagnitude = magnitude;
+  }
+  if (peakMagnitude <= 0) return null;
+
+  let firstPeakOffset = -1;
+  let lastPeakOffset = -1;
+  for (let i = 0; i < magnitudes.length; i++) {
+    if (magnitudes[i] >= peakMagnitude - PLATEAU_TOLERANCE) {
+      if (firstPeakOffset === -1) firstPeakOffset = i;
+      lastPeakOffset = i;
+    }
   }
 
-  return components;
+  const index = start + Math.round((firstPeakOffset + lastPeakOffset) / 2);
+  const magnitudeSum = magnitudes.reduce((sum, m) => sum + m, 0);
+  return { index, magnitude: peakMagnitude, meanMagnitude: magnitudeSum / magnitudes.length };
 }
 
-/** Prefers a component centred within the middle 70% of the frame (avoids a bright sky corner or lens flare); falls back to the single largest region overall rather than returning nothing. */
-function pickPatchComponent(components: Component[], width: number, height: number): Component | null {
-  if (components.length === 0) return null;
-
-  const centralMarginX = width * 0.15;
-  const centralMarginY = height * 0.15;
-  const central = components.filter(
-    (c) =>
-      c.centroidX >= centralMarginX &&
-      c.centroidX <= width - centralMarginX &&
-      c.centroidY >= centralMarginY &&
-      c.centroidY <= height - centralMarginY,
-  );
-
-  const pool = central.length > 0 ? central : components;
-  return pool.reduce((largest, c) => (c.area > largest.area ? c : largest));
-}
-
-/** How cleanly `component` resembles a single filled circle: 1.0 for a perfect circle, lower for an irregular/fragmented/off-centre region. Purely informational - never gates the result. */
-function estimateConfidence(component: Component, width: number, height: number): number {
-  const boxWidth = component.boundingBox.maxX - component.boundingBox.minX + 1;
-  const boxHeight = component.boundingBox.maxY - component.boundingBox.minY + 1;
-  const boxArea = boxWidth * boxHeight;
-  // A filled circle occupies about pi/4 (~0.785) of its bounding square.
-  const fillRatio = boxArea > 0 ? component.area / boxArea : 0;
-  const circularityScore = Math.max(0, 1 - Math.abs(fillRatio - Math.PI / 4) / (Math.PI / 4));
-
-  const centerX = width / 2;
-  const centerY = height / 2;
-  const maxOffset = Math.hypot(width, height) / 2;
-  const offset = Math.hypot(component.centroidX - centerX, component.centroidY - centerY);
-  const centralityScore = maxOffset > 0 ? Math.max(0, 1 - offset / maxOffset) : 1;
-
-  return Math.max(0, Math.min(1, circularityScore * 0.7 + centralityScore * 0.3));
+/** How far a peak stands out above the typical column-to-column change elsewhere on its side - a lone sharp edge scores near 1, a peak barely bigger than the surrounding noise scores near 0. */
+function edgeConfidence(peak: EdgePeak): number {
+  if (peak.magnitude <= 0) return 0;
+  const ratio = (peak.magnitude - peak.meanMagnitude) / peak.magnitude;
+  return Math.max(0, Math.min(1, ratio));
 }
 
 /**
- * Detects the sand patch in `image` and returns its diameter in mm using
- * `pixelsPerMm` (from a one-time camera calibration - see the module doc
- * comment). Returns null only when no foreground region exists at all
- * (e.g. a blank or fully uniform photo) - any other result, however
+ * Detects the sand patch's diameter along `image`'s horizontal centerline
+ * and converts it to mm using `pixelsPerMm` (from a one-time camera
+ * calibration - see the module doc comment). Returns null when either
+ * side has no edge clear enough to trust (a blank/uniform photo, or a
+ * change too small to be more than noise) - any other result, however
  * unreliable-looking, is still returned with a low `confidence` rather
  * than silently discarded, so the operator can see and correct it.
+ *
+ * `pixelsPerMm` must already be expressed in `image`'s own pixel scale.
+ * Calibration always measures against the original, full-resolution photo
+ * (see CameraCalibrationOverlay.tsx and ocrRuler.ts), so a caller that
+ * downsamples before building `image` (see lib/images/grayscale.ts) must
+ * scale `pixelsPerMm` down by the same factor first - otherwise every
+ * result comes out wrong by roughly (original size / image size).
  */
-export function detectPatchDiameter(
-  image: GrayscaleImage,
-  pixelsPerMm: number,
-  foregroundIsBrighter = true,
-): AutoDetectResult | null {
+export function detectPatchDiameter(image: GrayscaleImage, pixelsPerMm: number): AutoDetectResult | null {
   if (!Number.isFinite(pixelsPerMm) || pixelsPerMm <= 0) return null;
+  if (image.width < 4) return null;
 
-  const histogram = buildHistogram(image);
-  const threshold = computeOtsuThreshold(histogram, image.width * image.height);
-  const components = findComponents(image, threshold, foregroundIsBrighter);
-  const patch = pickPatchComponent(components, image.width, image.height);
-  if (!patch) return null;
+  const profile = buildHorizontalProfile(image);
+  const mid = Math.floor(profile.length / 2);
 
-  // A real patch, properly framed, never fills basically the whole photo -
-  // there is always some pavement/background visible around it. A region
-  // this large means the photo had no real contrast to threshold (e.g. a
-  // blank or overexposed frame), not an actual detection, and Otsu's
-  // threshold degenerates to the histogram's edge in exactly that case.
-  const totalPixels = image.width * image.height;
-  if (patch.area > totalPixels * 0.9) return null;
+  const leftPeak = findSteepestEdge(profile, 0, mid);
+  const rightPeak = findSteepestEdge(profile, mid, profile.length);
+  if (!leftPeak || !rightPeak) return null;
+  if (leftPeak.magnitude < MIN_EDGE_MAGNITUDE || rightPeak.magnitude < MIN_EDGE_MAGNITUDE) return null;
 
-  const diameterPixels = 2 * Math.sqrt(patch.area / Math.PI);
-  const diameterMm = diameterPixels / pixelsPerMm;
-  const confidence = estimateConfidence(patch, image.width, image.height);
+  const diameterPixels = rightPeak.index - leftPeak.index;
+  if (diameterPixels <= 0) return null;
 
-  return { diameterMm, diameterPixels, areaPixels: patch.area, confidence };
+  return {
+    diameterMm: diameterPixels / pixelsPerMm,
+    diameterPixels,
+    confidence: Math.min(edgeConfidence(leftPeak), edgeConfidence(rightPeak)),
+  };
 }
