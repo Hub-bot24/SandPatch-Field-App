@@ -1,5 +1,4 @@
 import { withBasePath } from "@/lib/config";
-import { estimatePixelsPerMmFromRulerNumbers, type RulerNumberToken, type RulerReadResult } from "./readRuler";
 
 // Tesseract.js defaults to fetching its worker script, WASM core, and
 // trained data from a CDN at runtime - which would both fail offline (the
@@ -15,6 +14,39 @@ const LANG_PATH = withBasePath("/vendor/tesseract");
 // testing both against a real ruler photo before choosing which to vendor;
 // the quantized model missed most of the actual numbers.
 const LANG = "eng";
+
+export interface RulerNumberToken {
+  /** The recognized number's real value, e.g. 150 for a "150" mark. */
+  value: number;
+  /** Bounding-box center, in the source image's pixel coordinates. */
+  x: number;
+  y: number;
+  /** OCR-reported confidence, 0-100. */
+  confidence: number;
+}
+
+type CreateWorkerFn = typeof import("tesseract.js").createWorker;
+/** A ready-to-use Tesseract worker, as returned by createRulerOcrWorker(). */
+export type RulerOcrWorker = Awaited<ReturnType<CreateWorkerFn>>;
+
+/**
+ * Creates one Tesseract worker for reading ruler numbers. Every reading
+ * (see lib/measurement/measurePatch.ts) runs on its own photo, but a
+ * single guided-capture run reads four photos back to back - the caller
+ * creates one worker for that whole run and reuses it via
+ * recognizeRulerNumbers() rather than paying worker start-up (loading the
+ * ~11MB trained-data file) four times over, then terminates it once the
+ * run finishes.
+ */
+export async function createRulerOcrWorker(): Promise<RulerOcrWorker> {
+  const { createWorker, OEM } = await import("tesseract.js");
+  return createWorker(LANG, OEM.LSTM_ONLY, {
+    workerPath: WORKER_PATH,
+    corePath: CORE_PATH,
+    langPath: LANG_PATH,
+    gzip: true,
+  });
+}
 
 interface OcrWord {
   text: string;
@@ -36,42 +68,24 @@ function collectWords(blocks: { paragraphs?: { lines?: { words?: OcrWord[] }[] }
   return words;
 }
 
-/** Runs OCR over the photo and returns every cleanly-recognized whole number, with its position and confidence - the raw material estimatePixelsPerMmFromRulerNumbers() weighs against itself. */
-export async function recognizeRulerNumbers(photo: Blob): Promise<RulerNumberToken[]> {
-  const { createWorker, OEM } = await import("tesseract.js");
-  const worker = await createWorker(LANG, OEM.LSTM_ONLY, {
-    workerPath: WORKER_PATH,
-    corePath: CORE_PATH,
-    langPath: LANG_PATH,
-    gzip: true,
-  });
+/** Runs OCR over the photo and returns every cleanly-recognized whole number, with its position and confidence - the raw material lib/measurement/readRulerAtEdge.ts reads directly off. */
+export async function recognizeRulerNumbers(worker: RulerOcrWorker, photo: Blob): Promise<RulerNumberToken[]> {
+  const buffer = await photo.arrayBuffer();
+  const { data } = await worker.recognize(new Blob([buffer]), {}, { blocks: true });
+  const words = collectWords(data.blocks as Parameters<typeof collectWords>[0]);
 
-  try {
-    const buffer = await photo.arrayBuffer();
-    const { data } = await worker.recognize(new Blob([buffer]), {}, { blocks: true });
-    const words = collectWords(data.blocks as Parameters<typeof collectWords>[0]);
-
-    const tokens: RulerNumberToken[] = [];
-    for (const word of words) {
-      const trimmed = word.text.trim();
-      if (!/^\d+$/.test(trimmed)) continue;
-      const value = Number(trimmed);
-      if (!Number.isFinite(value)) continue;
-      tokens.push({
-        value,
-        x: (word.bbox.x0 + word.bbox.x1) / 2,
-        y: (word.bbox.y0 + word.bbox.y1) / 2,
-        confidence: word.confidence,
-      });
-    }
-    return tokens;
-  } finally {
-    await worker.terminate();
+  const tokens: RulerNumberToken[] = [];
+  for (const word of words) {
+    const trimmed = word.text.trim();
+    if (!/^\d+$/.test(trimmed)) continue;
+    const value = Number(trimmed);
+    if (!Number.isFinite(value)) continue;
+    tokens.push({
+      value,
+      x: (word.bbox.x0 + word.bbox.x1) / 2,
+      y: (word.bbox.y0 + word.bbox.y1) / 2,
+      confidence: word.confidence,
+    });
   }
-}
-
-/** Reads a ruler photo end to end: OCR, then the pairwise-consensus scale estimate. Null means no confident, self-consistent reading was found - the caller should fall back to manual calibration rather than accept a guess. */
-export async function readRulerScale(photo: Blob): Promise<RulerReadResult | null> {
-  const tokens = await recognizeRulerNumbers(photo);
-  return estimatePixelsPerMmFromRulerNumbers(tokens);
+  return tokens;
 }

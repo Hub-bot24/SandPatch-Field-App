@@ -14,7 +14,7 @@ import {
   type SandPatchRecord,
   type SandVolumeMl,
 } from "@/types/record";
-import { DEFAULT_RULER_LENGTH_MM, toJobInput } from "@/types/job";
+import { DEFAULT_RULER_LENGTH_MM } from "@/types/job";
 import { createRecord, getRecord, updateRecord } from "@/lib/db/recordRepository";
 import { deletePhoto, deletePhotosForRecord, getPhotoMap, savePhoto } from "@/lib/db/photoRepository";
 import {
@@ -24,10 +24,11 @@ import {
   formatChainage,
 } from "@/lib/calculations";
 import { validateChainageInput, validateDiameterInput, validateOffsetInput } from "@/lib/validation";
-import { compressImageFile, blobToGrayscaleImage } from "@/lib/images";
+import { compressImageFile } from "@/lib/images";
 import { createId } from "@/lib/utils/id";
 import { sandPatchMeasurementEngine } from "@/lib/measurement";
-import { detectPatchDiameter } from "@/lib/measurement/autoDetect";
+import { measurePatchFromPhoto } from "@/lib/measurement/measurePatch";
+import { createRulerOcrWorker, type RulerOcrWorker } from "@/lib/measurement/ocrRuler";
 import { useJob } from "@/hooks/useJob";
 import { usePhotoPreviewUrls } from "@/hooks/usePhotoPreviewUrls";
 import { Button } from "@/components/ui/Button";
@@ -42,7 +43,6 @@ import { JobDetailsFields } from "@/components/record/JobDetailsFields";
 import { GpsCapture } from "@/components/gps/GpsCapture";
 import { PhotoCaptureSlot } from "@/components/photo/PhotoCaptureSlot";
 import { TapMeasureOverlay } from "@/components/photo/TapMeasureOverlay";
-import { CameraCalibrationOverlay } from "@/components/photo/CameraCalibrationOverlay";
 import { RecordStatusBadge } from "@/components/status/RecordStatusBadge";
 
 /** The next slot in a guided 1->2->3->4 capture run, or null once photo 4 is done. */
@@ -98,7 +98,7 @@ const EMPTY_FORM_STATE: FormState = {
 export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: string }) {
   const router = useRouter();
   const isEditMode = Boolean(initialRecordId);
-  const { job, save: saveJob } = useJob();
+  const { job } = useJob();
 
   const [recordId, setRecordId] = useState<string>(() => initialRecordId ?? createId());
   const [testDateTime, setTestDateTime] = useState<string>(() => new Date().toISOString());
@@ -127,12 +127,15 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
   const [guidedCaptureActive, setGuidedCaptureActive] = useState(false);
   const guidedInputRef = useRef<HTMLInputElement>(null);
   const guidedPhotoNumberRef = useRef<PhotoNumber | null>(null);
-
-  // First-time-only camera calibration, prompted inline if a guided capture
-  // is started before Job Setup has one - see lib/measurement/autoDetect.ts.
-  const [calibrationPhotoUrl, setCalibrationPhotoUrl] = useState<string | null>(null);
-  const calibrationInputRef = useRef<HTMLInputElement>(null);
   const [autoDetectBusy, setAutoDetectBusy] = useState<PhotoNumber | null>(null);
+
+  // One Tesseract worker per guided-capture run, shared across all 4
+  // photos (see lib/measurement/ocrRuler.ts) rather than paying its
+  // start-up cost four times over. Kicked off in parallel with opening the
+  // camera for photo 1 - awaited only once a photo actually needs
+  // measuring, by which point it has almost always already finished
+  // loading. Null once the run ends (success or otherwise) or on unmount.
+  const ocrWorkerPromiseRef = useRef<Promise<RulerOcrWorker | null> | null>(null);
 
   const appliedJobDefaultsRef = useRef(false);
   const savedIdsRef = useRef<Set<string>>(new Set());
@@ -277,10 +280,14 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
     return () => URL.revokeObjectURL(objectUrl);
   }, [measureState]);
 
+  // Safety net matching the object-URL cleanup pattern above: if the
+  // component unmounts mid-run (e.g. navigating away) with a worker still
+  // loaded or loading, terminate it rather than leaking it silently.
   useEffect(() => {
-    if (!calibrationPhotoUrl) return;
-    return () => URL.revokeObjectURL(calibrationPhotoUrl);
-  }, [calibrationPhotoUrl]);
+    return () => {
+      void ocrWorkerPromiseRef.current?.then((worker) => worker?.terminate()).catch(() => {});
+    };
+  }, []);
 
   function diameterPatchFor(photoNumber: PhotoNumber, valueRaw: string): Partial<FormState> {
     switch (photoNumber) {
@@ -302,14 +309,14 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
 
   function startGuidedCapture() {
     setGuidedCaptureActive(true);
-    if (job && !job.pixelsPerMm) {
-      // First-ever guided capture on this job: calibrate once, inline,
-      // without losing the form's progress by navigating to Job Setup.
-      // Every guided capture after this one skips straight to photo 1.
-      calibrationInputRef.current?.click();
-    } else {
-      triggerGuidedCapture(1);
-    }
+    // Kicked off now, in parallel with the operator taking photo 1 in
+    // their camera app - by the time handleGuidedFileChange actually needs
+    // it, it has almost always already finished loading. Triggering the
+    // camera stays synchronous within this click handler (some browsers
+    // require that for a file input's native picker to open), so this is
+    // deliberately not awaited here.
+    ocrWorkerPromiseRef.current = createRulerOcrWorker().catch(() => null);
+    triggerGuidedCapture(1);
   }
 
   async function handleGuidedFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -321,58 +328,30 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
     // Compress + persist in the background - it never blocks measurement.
     void handlePhotoCapture(photoNumber, file);
 
-    const pixelsPerMm = job?.pixelsPerMm;
-    if (!pixelsPerMm) {
-      // No calibration on record (shouldn't happen via the guided button,
-      // which calibrates first - only reachable if Job Setup's calibration
-      // was cleared mid-session). Fall back to the manual tap overlay for
-      // this one photo rather than silently fabricating a number.
+    const worker = ocrWorkerPromiseRef.current ? await ocrWorkerPromiseRef.current : null;
+    if (!worker) {
+      // OCR couldn't start at all for this run (unusual - browser support
+      // issue, or the vendored assets failed to load). Fall back to the
+      // manual tap overlay for this one photo rather than silently
+      // fabricating a number; its own confirm/cancel handlers advance the
+      // guided sequence once the operator finishes with it.
       setMeasureState({ photoNumber, objectUrl: URL.createObjectURL(file) });
       return;
     }
 
     setAutoDetectBusy(photoNumber);
     try {
-      const { image: grayscale, scale } = await blobToGrayscaleImage(file);
-      // pixelsPerMm is calibrated against the original, full-resolution
-      // photo, but `grayscale` has been downsampled for fast analysis - it
-      // must be scaled down by the same factor, or every diameter comes
-      // out wrong by roughly (original size / analysis size).
-      const result = detectPatchDiameter(grayscale, pixelsPerMm * scale);
+      const result = await measurePatchFromPhoto(worker, file);
       if (result) {
         updateForm(diameterPatchFor(photoNumber, String(Math.round(result.diameterMm * 10) / 10)));
       }
-      // A null result (no usable region found at all, e.g. a blank/blurred
-      // photo) leaves the diameter field exactly as it was - never a
-      // fabricated number - so it's still visibly empty for manual entry.
+      // A null result (the patch's edges weren't clear enough, or the
+      // ruler's numbers couldn't be read confidently near them) leaves the
+      // diameter field exactly as it was - never a fabricated number - so
+      // it's still visibly empty for manual entry.
     } finally {
       setAutoDetectBusy(null);
       advanceGuidedCapture(photoNumber);
-    }
-  }
-
-  function handleCalibrationFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) {
-      setGuidedCaptureActive(false);
-      return;
-    }
-    setCalibrationPhotoUrl(URL.createObjectURL(file));
-  }
-
-  function closeCalibration() {
-    setCalibrationPhotoUrl(null);
-    if (guidedCaptureActive) setGuidedCaptureActive(false);
-  }
-
-  async function handleCalibrationConfirm(pixelsPerMm: number) {
-    setCalibrationPhotoUrl(null);
-    if (job) {
-      await saveJob(toJobInput(job, { pixelsPerMm }));
-    }
-    if (guidedCaptureActive) {
-      triggerGuidedCapture(1);
     }
   }
 
@@ -389,6 +368,9 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
       triggerGuidedCapture(next);
     } else {
       setGuidedCaptureActive(false);
+      const workerPromise = ocrWorkerPromiseRef.current;
+      ocrWorkerPromiseRef.current = null;
+      void workerPromise?.then((worker) => worker?.terminate()).catch(() => {});
     }
   }
 
@@ -596,13 +578,12 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
 
       <Section title="Guided Capture">
         <p className="text-sm text-ink-muted">
-          {job?.pixelsPerMm
-            ? "Take all four photos in one go - each diameter is measured automatically, no taps needed."
-            : "Take all four photos in one go. First time: one quick ruler calibration, then every diameter measures automatically from then on - no taps needed."}
+          Take all four photos in one go - each diameter is read directly off the ruler in the shot, no
+          taps and no separate calibration step, ever.
         </p>
         <p className="text-sm text-ink-muted">
-          Frame each shot the way you&rsquo;d lay a ruler across the patch: the patch centred in frame, with the
-          direction you&rsquo;re measuring running left-to-right.
+          Frame each shot the way you&rsquo;d take the real reading: the ruler laid across the patch,
+          running left-to-right, with its printed numbers clearly visible near both edges of the sand.
         </p>
         <Button fullWidth onClick={startGuidedCapture} disabled={guidedCaptureActive}>
           {guidedCaptureActive
@@ -619,15 +600,6 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
           className="hidden"
           aria-label="Guided capture"
           onChange={handleGuidedFileChange}
-        />
-        <input
-          ref={calibrationInputRef}
-          type="file"
-          accept="image/*"
-          capture="environment"
-          className="hidden"
-          aria-label="Guided calibration capture"
-          onChange={handleCalibrationFileChange}
         />
       </Section>
 
@@ -785,15 +757,6 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
           calibrationLengthMm={job?.rulerLengthMm ?? DEFAULT_RULER_LENGTH_MM}
           onConfirm={handleMeasureConfirm}
           onCancel={handleMeasureCancel}
-        />
-      )}
-
-      {calibrationPhotoUrl && (
-        <CameraCalibrationOverlay
-          photoUrl={calibrationPhotoUrl}
-          rulerLengthMm={job?.rulerLengthMm ?? DEFAULT_RULER_LENGTH_MM}
-          onConfirm={handleCalibrationConfirm}
-          onCancel={closeCalibration}
         />
       )}
     </div>

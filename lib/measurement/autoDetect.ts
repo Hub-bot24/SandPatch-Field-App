@@ -1,12 +1,12 @@
 /**
- * Automatic sand-patch diameter detection: measures along the photo's
- * horizontal centerline, the same way a physical ruler laid across the
- * patch would be read - rather than the overall size of the visible sand
- * shape. This distinction matters: the real field method takes four
- * separate readings at four different angles specifically to catch a
- * patch that isn't perfectly round, and measuring "the whole shape's
- * size" the same way regardless of angle would silently defeat the
- * purpose of those four separate readings.
+ * Automatic sand-patch edge detection: finds the patch's two edges along
+ * the photo's horizontal centerline, the same way a physical ruler laid
+ * across the patch would be read - rather than the overall size of the
+ * visible sand shape. This distinction matters: the real field method
+ * takes four separate readings at four different angles specifically to
+ * catch a patch that isn't perfectly round, and measuring "the whole
+ * shape's size" the same way regardless of angle would silently defeat
+ * the purpose of those four separate readings.
  *
  * Each edge along that line is found at its point of steepest contrast
  * change (the discrete derivative's peak), not a single fixed brightness
@@ -17,13 +17,12 @@
  * by hand at a fuzzy edge: turning an inherently unclear boundary into
  * one specific, exact point to read.
  *
- * This still needs exactly one real-world reference to convert pixels to
- * millimetres - a photo alone can never carry an absolute scale, only a
- * ruler or a known camera-to-ground distance can. That reference is
- * `pixelsPerMm`, established once during camera calibration (see
- * types/job.ts's `pixelsPerMm` and lib/measurement/ocrRuler.ts) and reused
- * for every photo afterwards - never re-derived per photo, and never
- * invented when it's missing (`detectPatchDiameter` requires it).
+ * This module only ever reports *pixel* positions - it has no way to
+ * convert those to millimetres itself, since a photo alone can never
+ * carry an absolute scale. That conversion happens per photo, by reading
+ * the ruler's own printed numbers right at each edge (see
+ * lib/measurement/readRulerAtEdge.ts and lib/measurement/measurePatch.ts),
+ * not by any calibration stored here or reused across photos.
  */
 
 export interface GrayscaleImage {
@@ -33,11 +32,14 @@ export interface GrayscaleImage {
   data: Uint8ClampedArray | Uint8Array;
 }
 
-export interface AutoDetectResult {
-  diameterMm: number;
-  diameterPixels: number;
-  /** 0-1: how sharply the weaker of the two edges stood out against the background noise level. Not a hard gate - always inspect the number, never silently discarded. */
-  confidence: number;
+export interface DetectedEdges {
+  leftEdgeX: number;
+  rightEdgeX: number;
+  /** Vertical centre (in `image`'s pixel space) of the horizontal band that was scanned - the line a ruler laid across the patch is expected to run along. */
+  bandCenterY: number;
+  /** 0-1 each: how sharply that edge stood out against the background noise level. Not a hard gate - always inspect the number, never silently discarded. */
+  leftConfidence: number;
+  rightConfidence: number;
 }
 
 /** Fraction of the image's height averaged into the horizontal profile, centred vertically - smooths sand-grain/JPEG noise without requiring the whole frame to be part of the patch. */
@@ -116,23 +118,20 @@ function edgeConfidence(peak: EdgePeak): number {
 }
 
 /**
- * Detects the sand patch's diameter along `image`'s horizontal centerline
- * and converts it to mm using `pixelsPerMm` (from a one-time camera
- * calibration - see the module doc comment). Returns null when either
- * side has no edge clear enough to trust (a blank/uniform photo, or a
- * change too small to be more than noise) - any other result, however
- * unreliable-looking, is still returned with a low `confidence` rather
- * than silently discarded, so the operator can see and correct it.
+ * Detects the sand patch's two edges along `image`'s horizontal
+ * centerline, in `image`'s own pixel coordinates. Returns null when
+ * either side has no edge clear enough to trust (a blank/uniform photo,
+ * a change too small to be more than noise, or the two sides disagreeing
+ * on which is left/right) - any other result, however unreliable-looking,
+ * is still returned with a low `confidence` rather than silently
+ * discarded, so the operator can see and correct it.
  *
- * `pixelsPerMm` must already be expressed in `image`'s own pixel scale.
- * Calibration always measures against the original, full-resolution photo
- * (see CameraCalibrationOverlay.tsx and ocrRuler.ts), so a caller that
- * downsamples before building `image` (see lib/images/grayscale.ts) must
- * scale `pixelsPerMm` down by the same factor first - otherwise every
- * result comes out wrong by roughly (original size / image size).
+ * Converting these pixel positions to a millimetre diameter is a
+ * separate step (lib/measurement/measurePatch.ts) that reads the ruler's
+ * own printed numbers right at each edge - this function knows nothing
+ * about millimetres at all.
  */
-export function detectPatchDiameter(image: GrayscaleImage, pixelsPerMm: number): AutoDetectResult | null {
-  if (!Number.isFinite(pixelsPerMm) || pixelsPerMm <= 0) return null;
+export function detectPatchEdges(image: GrayscaleImage): DetectedEdges | null {
   if (image.width < 4) return null;
 
   const profile = buildHorizontalProfile(image);
@@ -142,13 +141,17 @@ export function detectPatchDiameter(image: GrayscaleImage, pixelsPerMm: number):
   const rightPeak = findSteepestEdge(profile, mid, profile.length);
   if (!leftPeak || !rightPeak) return null;
   if (leftPeak.magnitude < MIN_EDGE_MAGNITUDE || rightPeak.magnitude < MIN_EDGE_MAGNITUDE) return null;
+  if (rightPeak.index <= leftPeak.index) return null;
 
-  const diameterPixels = rightPeak.index - leftPeak.index;
-  if (diameterPixels <= 0) return null;
+  const { height } = image;
+  const bandHeight = Math.max(1, Math.round(height * BAND_FRACTION));
+  const bandStart = Math.max(0, Math.floor((height - bandHeight) / 2));
 
   return {
-    diameterMm: diameterPixels / pixelsPerMm,
-    diameterPixels,
-    confidence: Math.min(edgeConfidence(leftPeak), edgeConfidence(rightPeak)),
+    leftEdgeX: leftPeak.index,
+    rightEdgeX: rightPeak.index,
+    bandCenterY: bandStart + bandHeight / 2,
+    leftConfidence: edgeConfidence(leftPeak),
+    rightConfidence: edgeConfidence(rightPeak),
   };
 }

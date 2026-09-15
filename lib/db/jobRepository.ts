@@ -6,13 +6,14 @@ export async function getJob(): Promise<Job | null> {
   const db = await getDb();
   const job = await db.get(STORE_JOB_SETTINGS, JOB_SETTINGS_ID);
   if (!job) return null;
-  // A job saved before rulerLengthMm/pixelsPerMm existed won't have them in
-  // IndexedDB - default them at the read boundary rather than requiring a
-  // schema migration for what is otherwise a same-shape additive field.
+  // A job saved before rulerLengthMm existed won't have it in IndexedDB -
+  // default it at the read boundary rather than requiring a schema
+  // migration for what is otherwise a same-shape additive field. (A job
+  // saved by an older build may still carry a stray pixelsPerMm key from
+  // when camera calibration was job-level - it's simply never read now.)
   return {
     ...job,
     rulerLengthMm: job.rulerLengthMm ?? DEFAULT_RULER_LENGTH_MM,
-    pixelsPerMm: job.pixelsPerMm ?? null,
   };
 }
 
