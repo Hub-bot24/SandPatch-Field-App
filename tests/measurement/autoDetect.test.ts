@@ -1,128 +1,124 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildHistogram,
-  computeOtsuThreshold,
-  detectPatchDiameter,
-  type GrayscaleImage,
-} from "@/lib/measurement/autoDetect";
+import { detectPatchDiameter, type GrayscaleImage } from "@/lib/measurement/autoDetect";
 
-/** A width x height grayscale image, `background` everywhere except a filled circle of `foreground` centred at (cx, cy) with the given radius. */
-function circleImage(
+/** A width x height image: `background` on both sides, `foreground` in the middle band [patchStart, patchEnd), uniform down every column (so the horizontal centerline profile is the same regardless of exactly which rows are sampled). */
+function stepEdgeImage(
   width: number,
   height: number,
-  cx: number,
-  cy: number,
-  radius: number,
+  patchStart: number,
+  patchEnd: number,
   foreground = 220,
   background = 30,
 ): GrayscaleImage {
   const data = new Uint8ClampedArray(width * height).fill(background);
   for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      if ((x - cx) ** 2 + (y - cy) ** 2 <= radius * radius) {
-        data[y * width + x] = foreground;
-      }
+    for (let x = patchStart; x < patchEnd; x++) {
+      data[y * width + x] = foreground;
     }
   }
   return { width, height, data };
 }
 
-describe("computeOtsuThreshold", () => {
-  it("splits a clearly bimodal histogram between the two populations", () => {
-    const histogram = new Array(256).fill(0);
-    // A small spread around each population (rather than single-value
-    // spikes) so there's a real gap for the threshold to land inside,
-    // rather than exactly on one population's own edge.
-    for (let v = 25; v <= 35; v++) histogram[v] = 50; // background population
-    for (let v = 215; v <= 225; v++) histogram[v] = 50; // foreground population
-    const threshold = computeOtsuThreshold(histogram, 1100);
-    // Between-class variance is maximized by any threshold in the gap
-    // (36-214) - this implementation picks the first such value, a
-    // standard, documented convention, not an arbitrary choice.
-    expect(threshold).toBeGreaterThanOrEqual(35);
-    expect(threshold).toBeLessThanOrEqual(215);
-  });
-
-  it("matches buildHistogram's output shape for a real image", () => {
-    const image = circleImage(20, 20, 10, 10, 5);
-    const histogram = buildHistogram(image);
-    expect(histogram.reduce((a, b) => a + b, 0)).toBe(400);
-  });
-});
+/**
+ * Same idea, but each edge fades gradually over `rampWidth` columns instead
+ * of stepping instantly - simulating a real, not-perfectly-sharp sand
+ * boundary. Each ramp is centred ON patchStart/patchEnd (half the ramp
+ * inside the patch, half outside) rather than sitting entirely to one
+ * side, so the transition's midpoint - where a steepest-gradient detector
+ * is expected to land - coincides with the nominal boundary. A ramp placed
+ * entirely outside the boundary would make that midpoint several pixels
+ * away from patchStart/patchEnd by construction, which would be a flaw in
+ * the fixture, not in the detector.
+ */
+function fuzzyEdgeImage(
+  width: number,
+  height: number,
+  patchStart: number,
+  patchEnd: number,
+  rampWidth: number,
+  foreground = 220,
+  background = 30,
+): GrayscaleImage {
+  const data = new Uint8ClampedArray(width * height).fill(background);
+  const halfRamp = rampWidth / 2;
+  const valueAt = (x: number): number => {
+    if (x < patchStart - halfRamp || x >= patchEnd + halfRamp) return background;
+    if (x >= patchStart + halfRamp && x < patchEnd - halfRamp) return foreground;
+    if (x < patchStart + halfRamp) {
+      const t = (x - (patchStart - halfRamp)) / rampWidth;
+      return background + t * (foreground - background);
+    }
+    const t = 1 - (x - (patchEnd - halfRamp)) / rampWidth;
+    return background + t * (foreground - background);
+  };
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      data[y * width + x] = Math.round(valueAt(x));
+    }
+  }
+  return { width, height, data };
+}
 
 describe("detectPatchDiameter", () => {
-  it("measures a centred circle close to its true diameter", () => {
-    const radius = 30;
-    const image = circleImage(120, 120, 60, 60, radius);
-    const result = detectPatchDiameter(image, /* pixelsPerMm */ 1);
+  it("measures a clean, sharp-edged patch precisely", () => {
+    const image = stepEdgeImage(300, 100, 100, 220);
+    const result = detectPatchDiameter(image, 1);
     expect(result).not.toBeNull();
-    // Equivalent-circle diameter from pixel area should be close to 2*radius.
-    expect(result?.diameterMm).toBeGreaterThan(radius * 2 * 0.9);
-    expect(result?.diameterMm).toBeLessThan(radius * 2 * 1.1);
-    expect(result?.confidence).toBeGreaterThan(0.7);
+    // The left edge lands on the last background column before the step up
+    // (index patchStart - 1) and the right edge on the last foreground
+    // column before the step down (index patchEnd - 1); their difference
+    // still equals the true patch width (patchEnd - patchStart = 120).
+    expect(result?.diameterMm).toBeCloseTo(120, 0);
+    expect(result?.confidence).toBeGreaterThan(0.8);
+  });
+
+  it("still finds the correct edges through a gradual (fuzzy) transition", () => {
+    const image = fuzzyEdgeImage(300, 100, 100, 220, 15);
+    const result = detectPatchDiameter(image, 1);
+    expect(result).not.toBeNull();
+    // The steepest-change point of a linear ramp is at its midpoint, so
+    // the detected edges should land close to the true boundary despite
+    // the fade, not drift toward one end of the ramp.
+    expect(result?.diameterMm).toBeGreaterThan(115);
+    expect(result?.diameterMm).toBeLessThan(125);
   });
 
   it("converts pixels to mm using the calibration ratio", () => {
-    const image = circleImage(120, 120, 60, 60, 30);
+    const image = stepEdgeImage(300, 100, 100, 220);
     const atOnePxPerMm = detectPatchDiameter(image, 1);
     const atTwoPxPerMm = detectPatchDiameter(image, 2);
     expect(atOnePxPerMm).not.toBeNull();
     expect(atTwoPxPerMm).not.toBeNull();
-    // Double the px/mm ratio (a more zoomed-in or higher-res photo) halves the mm reading for the same pixel measurement.
     expect(atTwoPxPerMm!.diameterMm).toBeCloseTo(atOnePxPerMm!.diameterMm / 2, 5);
   });
 
-  it("prefers a centrally-placed region over a larger one stuck in a corner", () => {
-    const width = 200;
-    const height = 200;
-    const data = new Uint8ClampedArray(width * height).fill(30);
-    // A large bright blob jammed into the corner (e.g. overexposed sky) - bigger than the real patch.
-    for (let y = 0; y < 40; y++) {
-      for (let x = 0; x < 40; x++) data[y * width + x] = 220;
-    }
-    // The real, smaller patch, centred.
-    const centralRadius = 15;
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        if ((x - 100) ** 2 + (y - 100) ** 2 <= centralRadius * centralRadius) {
-          data[y * width + x] = 220;
-        }
-      }
-    }
-    const result = detectPatchDiameter({ width, height, data }, 1);
-    expect(result).not.toBeNull();
-    // Should measure the small central patch (~30px diameter), not the larger corner blob (~40px square).
-    expect(result?.diameterMm).toBeLessThan(35);
+  it("gives a sharp step edge higher confidence than a gradual one", () => {
+    const sharp = detectPatchDiameter(stepEdgeImage(300, 100, 100, 220), 1);
+    const fuzzy = detectPatchDiameter(fuzzyEdgeImage(300, 100, 100, 220, 25), 1);
+    expect(sharp).not.toBeNull();
+    expect(fuzzy).not.toBeNull();
+    expect(fuzzy!.confidence).toBeLessThan(sharp!.confidence);
   });
 
-  it("returns null for a uniform image with no contrast to threshold", () => {
-    const data = new Uint8ClampedArray(50 * 50).fill(128);
-    const result = detectPatchDiameter({ width: 50, height: 50, data }, 1);
-    expect(result).toBeNull();
+  it("returns null for a uniform image with no edges at all", () => {
+    const data = new Uint8ClampedArray(200 * 50).fill(128);
+    expect(detectPatchDiameter({ width: 200, height: 50, data }, 1)).toBeNull();
+  });
+
+  it("returns null when the only brightness change is too small to trust as a real edge", () => {
+    // A 2-level difference is well under MIN_EDGE_MAGNITUDE - JPEG noise territory, not a real boundary.
+    const image = stepEdgeImage(300, 100, 100, 220, 102, 100);
+    expect(detectPatchDiameter(image, 1)).toBeNull();
   });
 
   it("returns null for a non-positive calibration ratio instead of dividing by zero", () => {
-    const image = circleImage(60, 60, 30, 30, 10);
+    const image = stepEdgeImage(300, 100, 100, 220);
     expect(detectPatchDiameter(image, 0)).toBeNull();
     expect(detectPatchDiameter(image, -1)).toBeNull();
   });
 
-  it("gives a lower confidence to an irregular, scattered region than a clean circle", () => {
-    const cleanCircle = circleImage(120, 120, 60, 60, 30);
-    const cleanResult = detectPatchDiameter(cleanCircle, 1);
-
-    const width = 120;
-    const height = 120;
-    const scattered = new Uint8ClampedArray(width * height).fill(30);
-    // A thin, spread-out irregular shape rather than a filled disc - a jagged
-    // "L" shape connects several arms so it counts as one component but
-    // fills only a small fraction of its own bounding box.
-    for (let x = 20; x < 100; x++) scattered[60 * width + x] = 220;
-    for (let y = 20; y < 100; y++) scattered[y * width + 60] = 220;
-    const scatteredResult = detectPatchDiameter({ width, height, data: scattered }, 1);
-
-    expect(cleanResult).not.toBeNull();
-    expect(scatteredResult).not.toBeNull();
-    expect(scatteredResult!.confidence).toBeLessThan(cleanResult!.confidence);
+  it("returns null for an image too narrow to have two distinct halves", () => {
+    const data = new Uint8ClampedArray(3 * 10).fill(128);
+    expect(detectPatchDiameter({ width: 3, height: 10, data }, 1)).toBeNull();
   });
 });

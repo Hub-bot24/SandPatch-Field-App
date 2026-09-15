@@ -1,10 +1,27 @@
 import { loadDrawableImage, scaleDimensions } from "./compressImage";
 import type { GrayscaleImage } from "@/lib/measurement/autoDetect";
 
-// Auto-detection measures a region's pixel *area*, not fine edge detail, so
-// analysing at full photo resolution (1600-2000px) buys no real accuracy
-// and costs real time - downsampling first keeps every capture fast.
+// The line-based scan in lib/measurement/autoDetect.ts only ever reads a
+// thin horizontal band, not the whole frame, so it's already cheap at high
+// resolution - this cap exists purely to bound the one-off canvas
+// draw/getImageData cost on a large camera photo, not because the
+// measurement itself needs fewer pixels.
 const DEFAULT_ANALYSIS_DIMENSION = 400;
+
+export interface GrayscaleImageResult {
+  image: GrayscaleImage;
+  /**
+   * How much smaller `image` is than the original photo (analysis width /
+   * original width, <= 1). `pixelsPerMm` from camera calibration is always
+   * in the *original* photo's pixel scale (see
+   * components/photo/CameraCalibrationOverlay.tsx and
+   * lib/measurement/ocrRuler.ts, neither of which downsample before
+   * measuring) - callers must multiply `pixelsPerMm` by this scale before
+   * passing it to detectPatchDiameter, or every distance will be
+   * miscalculated by roughly (original size / analysis size).
+   */
+  scale: number;
+}
 
 /**
  * Decodes a photo Blob into a small grayscale pixel buffer for
@@ -14,7 +31,7 @@ const DEFAULT_ANALYSIS_DIMENSION = 400;
 export async function blobToGrayscaleImage(
   blob: Blob,
   maxDimension: number = DEFAULT_ANALYSIS_DIMENSION,
-): Promise<GrayscaleImage> {
+): Promise<GrayscaleImageResult> {
   const source = await loadDrawableImage(blob);
   try {
     const { width, height } = scaleDimensions(source.width, source.height, maxDimension);
@@ -35,7 +52,7 @@ export async function blobToGrayscaleImage(
       gray[i] = 0.299 * rgba[offset] + 0.587 * rgba[offset + 1] + 0.114 * rgba[offset + 2];
     }
 
-    return { width, height, data: gray };
+    return { image: { width, height, data: gray }, scale: width / source.width };
   } finally {
     if (typeof ImageBitmap !== "undefined" && source.image instanceof ImageBitmap) {
       source.image.close();

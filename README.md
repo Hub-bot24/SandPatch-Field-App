@@ -10,12 +10,12 @@ camera calibration - take one photo of your ruler, and the app reads the
 ruler's own printed numbers to work out the scale itself, no taps at all
 in the normal case - every "Take All 4 Photos" run measures the sand
 patch in each photo by itself, with no taps and no per-test setup. This
-is real computer vision (OCR for calibration, Otsu-threshold image
-segmentation for the patch itself - see "Automatic measurement" below),
-not a black box: every result is visible on-screen immediately, so a bad
-read is never hidden, and every diameter field stays a plain editable
-number in case one needs correcting by hand. If the ruler's numbers can't
-be read automatically (poor lighting, glare, an unusual ruler), calibration
+is real computer vision (OCR for calibration, a steepest-contrast-change
+line scan for the patch itself - see "Automatic measurement" below), not
+a black box: every result is visible on-screen immediately, so a bad read
+is never hidden, and every diameter field stays a plain editable number
+in case one needs correcting by hand. If the ruler's numbers can't be
+read automatically (poor lighting, glare, an unusual ruler), calibration
 falls back to two taps; **tap-to-measure** (tap a ruler and the patch
 edges directly on a photo) also remains available as a manual fallback
 for any single test photo where the automatic reading looks wrong. A
@@ -112,18 +112,33 @@ or clear data.
 
 ### Automatic measurement
 
-`lib/measurement/autoDetect.ts`'s `detectPatchDiameter()` finds the sand
-patch by contrast against the pavement and measures it - no taps, no
-per-photo setup. It uses Otsu's method (a standard, deterministic
-thresholding algorithm - not a guess) to binarize the photo, finds the
-largest connected region that's reasonably centred in frame (an explicit-
-stack flood fill - never recursive, since a real patch photo produces one
-large contiguous region), and reports its equivalent-circle diameter
-(`2 * sqrt(area / pi)`, which tolerates an imperfectly circular edge
-better than a single width measurement would). Every result carries a
-`confidence` (how cleanly one clean, central, roughly circular region
-separated out) - purely informational, never a gate: a result is only
-ever `null` when no usable region exists at all (e.g. a blank or
+`lib/measurement/autoDetect.ts`'s `detectPatchDiameter()` measures the
+sand patch the way the real field technique does: along one line, the
+same way an operator would lay a physical ruler across the patch at a
+given angle - not by measuring the size of the whole visible sand shape.
+That distinction matters because the field protocol takes four separate
+readings at four different angles specifically to catch a patch that
+isn't perfectly round; a "whole shape" measurement would give the same
+answer regardless of angle and would silently defeat the point of taking
+four readings at all. So detection samples a thin horizontal band across
+the vertical centre of the photo (16% of the frame's height, averaged
+into one brightness value per column, which smooths out sand-grain and
+JPEG noise), then walks outward from the centre on each side looking for
+the point of steepest brightness change - the column-to-column jump (or,
+across a gradual fade, the middle of the steepest run of change) that
+stands out most from the typical change level elsewhere on that side.
+
+That steepest-change point, rather than a single fixed brightness cutoff,
+is what makes this robust to a real sand edge, which is often a gradual
+fade rather than a hard line: a fixed threshold has to guess where in
+that fade "the edge" is, but the steepest-change point is a well-defined,
+repeatable target regardless of how gradual the fade is. This mirrors,
+digitally, the same problem a second ruler solves by hand at a fuzzy
+patch edge - turning an inherently unclear boundary into one specific,
+exact point to read. Every result carries a `confidence` (how sharply the
+weaker of the two edges stood out against the background noise level) -
+purely informational, never a gate: a result is only ever `null` when one
+side has no edge clear enough to trust at all (e.g. a blank or
 fully-uniform photo), and even then the diameter field is simply left
 empty for manual entry rather than a fabricated number appearing.
 
@@ -133,15 +148,23 @@ only a ruler (or a known camera-to-ground distance) can. That reference is
 `Job.pixelsPerMm`, established once via **Calibrate Camera** in Job Setup
 (or inline, automatically, the first time "Take All 4 Photos" is used on a
 job that hasn't been calibrated yet) and reused for every reading
-afterwards - never re-derived per photo or per test.
-`lib/images/grayscale.ts` decodes each photo into a small (400px) grayscale
-buffer first - detection measures pixel *area*, not fine edge detail, so
-analysing at full photo resolution would only cost time, not add accuracy.
+afterwards - never re-derived per photo or per test. Calibration always
+measures against the original, full-resolution photo, but
+`lib/images/grayscale.ts` decodes each photo into a smaller (400px)
+buffer before scanning it, purely to keep the one-off decode fast on a
+large camera photo (the line scan itself only ever touches a thin band,
+so it doesn't need the full resolution the way the calibration tap/OCR
+positions do) - `blobToGrayscaleImage()` reports how much smaller that
+buffer is than the original, and `pixelsPerMm` is scaled down by the same
+factor before use, so the result doesn't depend on how much a given
+photo happened to be downsampled.
 
-This assumes the patch is lighter than the surrounding pavement (true for
-sand on a typical bitumen/asphalt seal) and reasonably centred in frame -
-see "Known limitations" below for what that means for a very different
-pavement colour, harsh shadows, or an off-centre shot.
+Because this measures along one line rather than the whole photo, it
+assumes each photo is framed the way the physical technique frames a
+ruler shot: the patch centred vertically in frame, with the direction
+being measured running horizontally across the shot (the guided capture
+screen shows this reminder before every run) - see "Known limitations"
+below for what happens when a photo doesn't meet that assumption.
 
 ### Automatic camera calibration (reading the ruler)
 
@@ -393,19 +416,28 @@ serves from its own root).
   not be exercised in this build environment - verification here used
   Playwright's file-input injection to exercise the same capture ->
   compress -> store -> preview pipeline a real photo takes.
-- **Automatic measurement's accuracy depends on real contrast and a
-  reasonably consistent camera distance**, not on any app-side correction:
-  it needs the sand patch to actually look lighter than the surrounding
-  pavement (a very light-coloured concrete surface, harsh shadows cutting
-  across the patch, or a very washed-out/overexposed photo can all confuse
-  the threshold), and the patch reasonably centred in frame. The one-time
-  calibration assumes every future photo is taken from roughly the same
-  camera-to-ground distance as the calibration photo was - holding the
-  phone "about the same" by feel varies naturally, and that variation
-  becomes measurement error directly. There is no perspective correction
-  either. None of this is silent: every reading is shown on-screen
-  immediately, and "Measure from Photo" is always available to override a
-  reading by hand.
+- **Automatic measurement's accuracy depends on real contrast, correct
+  framing, and a reasonably consistent camera distance**, not on any
+  app-side correction: it needs the sand patch to actually look lighter
+  than the surrounding pavement along the scanned line (a very
+  light-coloured concrete surface, harsh shadows cutting across the patch,
+  or a very washed-out/overexposed photo can all confuse the edge scan),
+  and - because it measures along one horizontal line through the vertical
+  centre of the photo rather than the whole visible shape - each photo
+  needs to be framed with the patch centred vertically and the direction
+  being measured running left-to-right, the same way the physical
+  technique frames a ruler laid across the patch (the guided capture
+  screen reminds the operator of this before every run). A patch that
+  sits well above or below the frame's vertical centre, or a shot rotated
+  so the intended measuring direction runs more up-down than left-right,
+  can miss the patch entirely or measure a shorter chord instead of the
+  intended diameter. The one-time calibration assumes every future photo
+  is taken from roughly the same camera-to-ground distance as the
+  calibration photo was - holding the phone "about the same" by feel
+  varies naturally, and that variation becomes measurement error directly.
+  There is no perspective correction either. None of this is silent: every
+  reading is shown on-screen immediately, and "Measure from Photo" is
+  always available to override a reading by hand.
 - **Automatic camera calibration's OCR accuracy depends on the ruler
   actually being legible**: glare off a shiny steel ruler, heavy motion
   blur, extreme close-ups that cut off multiple digits, or a ruler with
