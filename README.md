@@ -27,9 +27,10 @@ Version 1 is stable in real field use.
 1. **Job Setup** (`/job`) - road, contract/job number, lot number, operator,
    existing/proposed aggregate size, default sand volume, ruler length (the
    tap-to-measure fallback's calibration constant, default 300mm), and
-   **Calibrate Camera** (take one photo of the ruler, tap its two ends -
-   the one-time reference automatic measurement scales every reading
-   against). Saved once, prefills every new record.
+   **Calibrate Camera** (take one photo showing any part of the ruler,
+   tap two points on it, confirm the real distance between them - the one-
+   time reference automatic measurement scales every reading against).
+   Saved once, prefills every new record.
 2. **New Test** (`/`) - the main field screen. Road, chainage, direction,
    offset, control line, GPS, four photos, four diameters, live average
    diameter + texture depth, notes, Save Record. "Take All 4 Photos" drives
@@ -126,7 +127,13 @@ only a ruler (or a known camera-to-ground distance) can. That reference is
 `Job.pixelsPerMm`, established once via **Calibrate Camera** in Job Setup
 (or inline, automatically, the first time "Take All 4 Photos" is used on a
 job that hasn't been calibrated yet) and reused for every reading
-afterwards - never re-derived per photo or per test.
+afterwards - never re-derived per photo or per test. Calibration taps
+don't have to land on the ruler's two physical ends - a real calibration
+photo often only shows a segment of the ruler (zoomed in for a clear
+reading, or with an object crossing part of it), so the operator taps any
+two clearly marked points and confirms the real distance between them
+(defaulting to the job's full Ruler Length, but always editable - e.g.
+entering 80 after tapping a ruler's 150mm and 230mm marks).
 `lib/images/grayscale.ts` decodes each photo into a small (400px) grayscale
 buffer first - detection measures pixel *area*, not fine edge detail, so
 analysing at full photo resolution would only cost time, not add accuracy.
