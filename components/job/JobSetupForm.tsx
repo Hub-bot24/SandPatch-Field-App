@@ -3,15 +3,17 @@
 import { useState } from "react";
 import { useJob } from "@/hooks/useJob";
 import { TextField } from "@/components/ui/TextField";
+import { NumericField } from "@/components/ui/NumericField";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Button } from "@/components/ui/Button";
 import { SAND_VOLUMES, type SandVolumeMl } from "@/types/record";
-import { EMPTY_JOB_INPUT, type JobInput } from "@/types/job";
+import { DEFAULT_RULER_LENGTH_MM, EMPTY_JOB_INPUT, type JobInput } from "@/types/job";
 import type { Job } from "@/types/job";
 
 export function JobSetupForm() {
   const { job, loading, save } = useJob();
   const [form, setForm] = useState<JobInput>(EMPTY_JOB_INPUT);
+  const [rulerLengthRaw, setRulerLengthRaw] = useState(String(EMPTY_JOB_INPUT.rulerLengthMm));
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -31,7 +33,9 @@ export function JobSetupForm() {
       existingAggregateSize: job.existingAggregateSize,
       proposedAggregateSize: job.proposedAggregateSize,
       defaultSandVolumeMl: job.defaultSandVolumeMl,
+      rulerLengthMm: job.rulerLengthMm,
     });
+    setRulerLengthRaw(String(job.rulerLengthMm));
   }
 
   function update(patch: Partial<JobInput>) {
@@ -39,10 +43,21 @@ export function JobSetupForm() {
     setSaved(false);
   }
 
+  function updateRulerLengthRaw(raw: string) {
+    setRulerLengthRaw(raw);
+    setSaved(false);
+  }
+
   async function handleSave() {
     setSaving(true);
     try {
-      await save(form);
+      const parsedRulerLength = Number(rulerLengthRaw);
+      const rulerLengthMm =
+        Number.isFinite(parsedRulerLength) && parsedRulerLength > 0
+          ? parsedRulerLength
+          : DEFAULT_RULER_LENGTH_MM;
+      setRulerLengthRaw(String(rulerLengthMm));
+      await save({ ...form, rulerLengthMm });
       setSaved(true);
     } finally {
       setSaving(false);
@@ -86,6 +101,17 @@ export function JobSetupForm() {
         formatOption={(v) => `${v} mL`}
         columns={2}
       />
+      <NumericField
+        label="Ruler Length"
+        value={rulerLengthRaw}
+        onChange={updateRulerLengthRaw}
+        unit="mm"
+        placeholder={String(DEFAULT_RULER_LENGTH_MM)}
+      />
+      <p className="-mt-2 text-xs text-ink-muted">
+        The full length of the ruler you lay across the sand patch. Used to scale tap-to-measure photo
+        readings - see each Diameter step on the New Test screen.
+      </p>
 
       <Button fullWidth onClick={handleSave} disabled={saving}>
         {saving ? "Saving…" : "Save Job Setup"}

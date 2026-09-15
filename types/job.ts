@@ -14,11 +14,16 @@ export interface Job {
   existingAggregateSize: string;
   proposedAggregateSize: string;
   defaultSandVolumeMl: SandVolumeMl;
+  /** Length, in mm, of the ruler used for tap-to-measure photo calibration - see lib/measurement/tapMeasure.ts. */
+  rulerLengthMm: number;
   createdAt: string;
   updatedAt: string;
 }
 
 export type JobInput = Omit<Job, "id" | "createdAt" | "updatedAt">;
+
+/** Standard steel ruler length used for sand patch testing, per the lab equipment list. */
+export const DEFAULT_RULER_LENGTH_MM = 300;
 
 export const EMPTY_JOB_INPUT: JobInput = {
   road: "",
@@ -28,4 +33,5 @@ export const EMPTY_JOB_INPUT: JobInput = {
   existingAggregateSize: "",
   proposedAggregateSize: "",
   defaultSandVolumeMl: 50,
+  rulerLengthMm: DEFAULT_RULER_LENGTH_MM,
 };
