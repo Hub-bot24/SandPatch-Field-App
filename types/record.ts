@@ -2,9 +2,18 @@ export type Direction = "LHS" | "RHS" | "Centre" | "Other";
 
 export const DIRECTIONS: Direction[] = ["LHS", "RHS", "Centre", "Other"];
 
-export type ControlLine = "CL" | "Edge" | "Wheel Path" | "Other";
+export type ControlLine = "Left Wheel Path" | "Diff" | "Right Wheel Path" | "Shoulder" | "Other";
 
-export const CONTROL_LINES: ControlLine[] = ["CL", "Edge", "Wheel Path", "Other"];
+// Ordered left-to-right across a lane cross-section. "Diff" is the strip
+// between the two wheel paths (after the vehicle differential, which sits
+// between the wheels).
+export const CONTROL_LINES: ControlLine[] = [
+  "Left Wheel Path",
+  "Diff",
+  "Right Wheel Path",
+  "Shoulder",
+  "Other",
+];
 
 export type SandVolumeMl = 50 | 100;
 
