@@ -22,9 +22,25 @@
 const CACHE_VERSION = "v1";
 const CACHE_NAME = `sandpatch-cache-${CACHE_VERSION}`;
 
+// Derived from this worker's own registration scope rather than
+// hardcoded, so the same file works whether the app is served from the
+// domain root (local dev, Vercel, ...) or a subpath (GitHub Pages project
+// sites are served at /<repo-name>/) - next.config.ts's basePath stays
+// the single source of truth for which one it is.
+const BASE_PATH = (() => {
+  try {
+    const scopePath = new URL(self.registration.scope).pathname;
+    return scopePath.endsWith("/") ? scopePath.slice(0, -1) : scopePath;
+  } catch {
+    return "";
+  }
+})();
+
 // Known static routes, warmed at install time so the app shell is
 // available offline even before every tab has been opened once.
-const APP_SHELL_URLS = ["/", "/records/", "/records/view/", "/job/", "/export/"];
+const APP_SHELL_URLS = ["/", "/records/", "/records/view/", "/job/", "/export/"].map(
+  (path) => `${BASE_PATH}${path}`,
+);
 
 // The tab that triggers installing this service worker is NOT controlled
 // by it (browsers only hand control to a new SW from the next navigation
@@ -52,7 +68,8 @@ async function precacheAppShell() {
         if (!response.ok) return;
         await cache.put(url, response.clone());
         const html = await response.text();
-        for (const match of html.matchAll(/(?:src|href)="(\/_next\/[^"]+)"/g)) {
+        // Matches "/_next/..." with or without a basePath prefix in front.
+        for (const match of html.matchAll(/(?:src|href)="([^"]*\/_next\/[^"]+)"/g)) {
           assetUrls.add(match[1]);
         }
       } catch {
@@ -120,7 +137,7 @@ async function networkFirst(request) {
   } catch {
     const cached = await cache.match(request);
     if (cached) return cached;
-    const shell = await cache.match("/");
+    const shell = await cache.match(`${BASE_PATH}/`);
     if (shell) return shell;
     return new Response("Offline and this page has not been cached yet.", {
       status: 503,
