@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
 import {
   CONTROL_LINES,
@@ -14,6 +14,7 @@ import {
   type SandPatchRecord,
   type SandVolumeMl,
 } from "@/types/record";
+import { DEFAULT_RULER_LENGTH_MM } from "@/types/job";
 import { createRecord, getRecord, updateRecord } from "@/lib/db/recordRepository";
 import { deletePhoto, deletePhotosForRecord, getPhotoMap, savePhoto } from "@/lib/db/photoRepository";
 import {
@@ -39,7 +40,16 @@ import { ResultsCard } from "@/components/record/ResultsCard";
 import { JobDetailsFields } from "@/components/record/JobDetailsFields";
 import { GpsCapture } from "@/components/gps/GpsCapture";
 import { PhotoCaptureSlot } from "@/components/photo/PhotoCaptureSlot";
+import { TapMeasureOverlay } from "@/components/photo/TapMeasureOverlay";
 import { RecordStatusBadge } from "@/components/status/RecordStatusBadge";
+
+/** The next slot in a guided 1->2->3->4 capture run, or null once photo 4 is done. */
+function nextPhotoNumber(n: PhotoNumber): PhotoNumber | null {
+  if (n === 1) return 2;
+  if (n === 2) return 3;
+  if (n === 3) return 4;
+  return null;
+}
 
 interface FormState {
   road: string;
@@ -104,6 +114,17 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [measurementMessage, setMeasurementMessage] = useState<string | null>(null);
+
+  // Tap-to-measure: either a standalone re-measure of an already-stored
+  // photo, or one step of the guided "take all 4" run (guidedPhotoNumberRef
+  // holds which slot the *next* file-input capture belongs to, since the
+  // native camera picker is triggered imperatively, not through React state).
+  const [measureState, setMeasureState] = useState<{ photoNumber: PhotoNumber; objectUrl: string } | null>(
+    null,
+  );
+  const [guidedCaptureActive, setGuidedCaptureActive] = useState(false);
+  const guidedInputRef = useRef<HTMLInputElement>(null);
+  const guidedPhotoNumberRef = useRef<PhotoNumber | null>(null);
 
   const appliedJobDefaultsRef = useRef(false);
   const savedIdsRef = useRef<Set<string>>(new Set());
@@ -238,6 +259,81 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
       delete next[photoNumber];
       return next;
     });
+  }
+
+  // Revokes the tap-to-measure preview URL whenever it's replaced or the
+  // overlay closes, including on unmount - mirrors usePhotoPreviewUrls.
+  useEffect(() => {
+    if (!measureState) return;
+    const { objectUrl } = measureState;
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [measureState]);
+
+  function diameterPatchFor(photoNumber: PhotoNumber, valueRaw: string): Partial<FormState> {
+    switch (photoNumber) {
+      case 1:
+        return { diameter1Raw: valueRaw };
+      case 2:
+        return { diameter2Raw: valueRaw };
+      case 3:
+        return { diameter3Raw: valueRaw };
+      case 4:
+        return { diameter4Raw: valueRaw };
+    }
+  }
+
+  function triggerGuidedCapture(photoNumber: PhotoNumber) {
+    guidedPhotoNumberRef.current = photoNumber;
+    guidedInputRef.current?.click();
+  }
+
+  function startGuidedCapture() {
+    setGuidedCaptureActive(true);
+    triggerGuidedCapture(1);
+  }
+
+  function handleGuidedFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    const photoNumber = guidedPhotoNumberRef.current;
+    event.target.value = "";
+    if (!file || !photoNumber) return;
+
+    setMeasureState({ photoNumber, objectUrl: URL.createObjectURL(file) });
+    // Compress + persist in the background: the operator spends at least a
+    // few seconds tapping the measurement overlay next, which is comfortably
+    // enough time for this to finish before Save is ever reachable.
+    void handlePhotoCapture(photoNumber, file);
+  }
+
+  function openStandaloneMeasure(photoNumber: PhotoNumber) {
+    const photo = photos[photoNumber];
+    if (!photo) return;
+    setMeasureState({ photoNumber, objectUrl: URL.createObjectURL(photo.blob) });
+  }
+
+  function advanceGuidedCapture(justFinishedPhoto: PhotoNumber) {
+    if (!guidedCaptureActive) return;
+    const next = nextPhotoNumber(justFinishedPhoto);
+    if (next) {
+      triggerGuidedCapture(next);
+    } else {
+      setGuidedCaptureActive(false);
+    }
+  }
+
+  function handleMeasureConfirm(diameterMm: number) {
+    if (!measureState) return;
+    const { photoNumber } = measureState;
+    updateForm(diameterPatchFor(photoNumber, String(diameterMm)));
+    setMeasureState(null);
+    advanceGuidedCapture(photoNumber);
+  }
+
+  function handleMeasureCancel() {
+    if (!measureState) return;
+    const { photoNumber } = measureState;
+    setMeasureState(null);
+    advanceGuidedCapture(photoNumber);
   }
 
   function resetFormForNextTest() {
@@ -427,6 +523,25 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
         <GpsCapture value={form.gps} onChange={(reading) => updateForm({ gps: reading })} />
       </Section>
 
+      <Section title="Guided Capture">
+        <p className="text-sm text-ink-muted">
+          Take all four photos in one go - after each shot, tap your ruler and the sand patch edges on the
+          photo and the diameter fills in automatically.
+        </p>
+        <Button fullWidth onClick={startGuidedCapture} disabled={guidedCaptureActive}>
+          {guidedCaptureActive ? "Capturing…" : "Take All 4 Photos"}
+        </Button>
+        <input
+          ref={guidedInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          aria-label="Guided capture"
+          onChange={handleGuidedFileChange}
+        />
+      </Section>
+
       <Section step={7} title="Photo 1">
         <PhotoCaptureSlot
           label="Photo 1"
@@ -438,13 +553,20 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
         />
       </Section>
       <Section step={8} title="Diameter 1">
-        <NumericField
-          label="Diameter 1"
-          value={form.diameter1Raw}
-          onChange={(v) => updateForm({ diameter1Raw: v })}
-          unit="mm"
-          error={fieldErrors.diameter1}
-        />
+        <div className="space-y-2">
+          <NumericField
+            label="Diameter 1"
+            value={form.diameter1Raw}
+            onChange={(v) => updateForm({ diameter1Raw: v })}
+            unit="mm"
+            error={fieldErrors.diameter1}
+          />
+          {photos[1] && (
+            <Button variant="secondary" fullWidth onClick={() => openStandaloneMeasure(1)}>
+              Measure from Photo
+            </Button>
+          )}
+        </div>
       </Section>
 
       <Section step={9} title="Photo 2">
@@ -458,13 +580,20 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
         />
       </Section>
       <Section step={10} title="Diameter 2">
-        <NumericField
-          label="Diameter 2"
-          value={form.diameter2Raw}
-          onChange={(v) => updateForm({ diameter2Raw: v })}
-          unit="mm"
-          error={fieldErrors.diameter2}
-        />
+        <div className="space-y-2">
+          <NumericField
+            label="Diameter 2"
+            value={form.diameter2Raw}
+            onChange={(v) => updateForm({ diameter2Raw: v })}
+            unit="mm"
+            error={fieldErrors.diameter2}
+          />
+          {photos[2] && (
+            <Button variant="secondary" fullWidth onClick={() => openStandaloneMeasure(2)}>
+              Measure from Photo
+            </Button>
+          )}
+        </div>
       </Section>
 
       <Section step={11} title="Photo 3">
@@ -478,13 +607,20 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
         />
       </Section>
       <Section step={12} title="Diameter 3">
-        <NumericField
-          label="Diameter 3"
-          value={form.diameter3Raw}
-          onChange={(v) => updateForm({ diameter3Raw: v })}
-          unit="mm"
-          error={fieldErrors.diameter3}
-        />
+        <div className="space-y-2">
+          <NumericField
+            label="Diameter 3"
+            value={form.diameter3Raw}
+            onChange={(v) => updateForm({ diameter3Raw: v })}
+            unit="mm"
+            error={fieldErrors.diameter3}
+          />
+          {photos[3] && (
+            <Button variant="secondary" fullWidth onClick={() => openStandaloneMeasure(3)}>
+              Measure from Photo
+            </Button>
+          )}
+        </div>
       </Section>
 
       <Section step={13} title="Photo 4">
@@ -498,13 +634,20 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
         />
       </Section>
       <Section step={14} title="Diameter 4">
-        <NumericField
-          label="Diameter 4"
-          value={form.diameter4Raw}
-          onChange={(v) => updateForm({ diameter4Raw: v })}
-          unit="mm"
-          error={fieldErrors.diameter4}
-        />
+        <div className="space-y-2">
+          <NumericField
+            label="Diameter 4"
+            value={form.diameter4Raw}
+            onChange={(v) => updateForm({ diameter4Raw: v })}
+            unit="mm"
+            error={fieldErrors.diameter4}
+          />
+          {photos[4] && (
+            <Button variant="secondary" fullWidth onClick={() => openStandaloneMeasure(4)}>
+              Measure from Photo
+            </Button>
+          )}
+        </div>
       </Section>
 
       <Section step={15} title="Average Diameter & Texture Depth">
@@ -526,8 +669,12 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
           onClick={handleTryAutoMeasure}
           className="text-sm font-semibold text-ink-muted underline decoration-dotted underline-offset-4"
         >
-          Try Auto-Measure (Version 2 preview)
+          Try Fully-Automatic Detection (Version 2 preview)
         </button>
+        <p className="text-xs text-ink-muted">
+          This is different from the tap-to-measure buttons above: it would detect the sand patch edges
+          itself with no taps at all, and is not implemented yet.
+        </p>
         {measurementMessage && <p className="text-sm text-ink-muted">{measurementMessage}</p>}
       </div>
 
@@ -541,6 +688,16 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
           {saving ? "Saving…" : "Save Record"}
         </Button>
       </Section>
+
+      {measureState && (
+        <TapMeasureOverlay
+          photoUrl={measureState.objectUrl}
+          photoLabel={`Photo ${measureState.photoNumber}`}
+          calibrationLengthMm={job?.rulerLengthMm ?? DEFAULT_RULER_LENGTH_MM}
+          onConfirm={handleMeasureConfirm}
+          onCancel={handleMeasureCancel}
+        />
+      )}
     </div>
   );
 }
