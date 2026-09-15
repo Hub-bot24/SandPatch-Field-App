@@ -16,6 +16,15 @@ export interface Job {
   defaultSandVolumeMl: SandVolumeMl;
   /** Length, in mm, of the ruler used for tap-to-measure photo calibration - see lib/measurement/tapMeasure.ts. */
   rulerLengthMm: number;
+  /**
+   * Pixels-per-mm from a one-time camera calibration (see
+   * lib/measurement/autoDetect.ts) - null until the operator calibrates at
+   * least once. Reused for every automatic reading afterwards; a photo
+   * alone can never carry an absolute scale, so this is the one real-world
+   * reference the whole feature depends on. Re-calibrate if the camera or
+   * typical shooting distance changes.
+   */
+  pixelsPerMm: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -34,4 +43,17 @@ export const EMPTY_JOB_INPUT: JobInput = {
   proposedAggregateSize: "",
   defaultSandVolumeMl: 50,
   rulerLengthMm: DEFAULT_RULER_LENGTH_MM,
+  pixelsPerMm: null,
 };
+
+/**
+ * Strips id/createdAt/updatedAt so a loaded Job can be re-saved (optionally
+ * with overrides) without hand-listing every other field - so a field
+ * added to Job later is carried through automatically instead of silently
+ * dropped by a call site nobody remembered to update.
+ */
+export function toJobInput(job: Job, overrides: Partial<JobInput> = {}): JobInput {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to omit them below
+  const { id, createdAt, updatedAt, ...jobInput } = job;
+  return { ...jobInput, ...overrides };
+}
