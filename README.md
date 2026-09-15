@@ -142,12 +142,31 @@ git remote add origin <your-empty-github-repo-url>
 git push -u origin main
 ```
 
-## Deploying to Vercel
+## Deploying to GitHub Pages (no external account needed)
 
-1. Push the repository to GitHub (above).
+`.github/workflows/deploy-pages.yml` builds and publishes the app to GitHub
+Pages automatically on every push to `main`. GitHub Pages serves a project
+repository at `https://<owner>.github.io/<repo-name>/` rather than a domain
+root, so the workflow passes `NEXT_PUBLIC_BASE_PATH` (auto-detected from the
+repo name via `actions/configure-pages`) into the build - see `lib/config.ts`
+and `next.config.ts`. Locally, or on a host that serves from the root
+(Vercel, Netlify, ...), this variable is simply unset and the app behaves
+exactly as if there were no subpath.
+
+**One-time setup** (repository owner only, cannot be done via the API used
+here): go to the repo's **Settings -> Pages**, and under "Build and
+deployment", set **Source** to **GitHub Actions**. After that, every push to
+`main` deploys automatically - the live URL appears on that same Settings
+page and in the workflow run's summary.
+
+## Deploying to Vercel (alternative)
+
+1. Sign up/log in at vercel.com, ideally with **Continue with GitHub** using
+   the account that owns this repo - no separate password needed.
 2. In the Vercel dashboard: **Add New... -> Project**, import the repo.
-3. Framework preset: Next.js (auto-detected). No environment variables are
-   required - Version 1 has no backend.
+3. Framework preset: Next.js (auto-detected). Leave `NEXT_PUBLIC_BASE_PATH`
+   unset - Vercel serves from the root, so no base path is needed. No other
+   environment variables are required - Version 1 has no backend.
 4. Deploy. Vercel serves the static export directly; every route in this
    app is prerendered, so there is nothing else to configure.
 5. Vercel deployments are HTTPS by default, which is required for
@@ -155,8 +174,9 @@ git push -u origin main
    `localhost`.
 
 The app is a static export, so it can equally be deployed to Netlify,
-Cloudflare Pages, GitHub Pages, or any static host by uploading the
-contents of `out/` after `npm run build`.
+Cloudflare Pages, or any static host by uploading the contents of `out/`
+after `npm run build` (leave `NEXT_PUBLIC_BASE_PATH` unset for any host that
+serves from its own root).
 
 ## Installing on iPhone (Safari)
 

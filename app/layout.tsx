@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { AppShell } from "@/components/layout/AppShell";
 import { ServiceWorkerRegister } from "@/components/pwa/ServiceWorkerRegister";
+import { withBasePath } from "@/lib/config";
 
 export const metadata: Metadata = {
   title: {
@@ -18,13 +19,16 @@ export const metadata: Metadata = {
     statusBarStyle: "black-translucent",
   },
   icons: {
+    // Next auto-prefixes next/link hrefs and _next/static asset URLs with
+    // basePath, but not arbitrary metadata string values - these need it
+    // added explicitly so they still resolve under a GitHub Pages subpath.
     icon: [
-      { url: "/icons/favicon-32.png", sizes: "32x32", type: "image/png" },
-      { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
-      { url: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
+      { url: withBasePath("/icons/favicon-32.png"), sizes: "32x32", type: "image/png" },
+      { url: withBasePath("/icons/icon-192.png"), sizes: "192x192", type: "image/png" },
+      { url: withBasePath("/icons/icon-512.png"), sizes: "512x512", type: "image/png" },
     ],
     apple: [
-      { url: "/icons/apple-touch-icon.png", sizes: "180x180", type: "image/png" },
+      { url: withBasePath("/icons/apple-touch-icon.png"), sizes: "180x180", type: "image/png" },
     ],
   },
 };
