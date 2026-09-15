@@ -19,6 +19,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored third-party assets (minified, not our code) - see
+    // lib/measurement/ocrRuler.ts for what these are and why they're
+    // vendored rather than fetched from a CDN.
+    "public/vendor/**",
   ]),
 ]);
 

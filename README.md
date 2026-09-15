@@ -6,31 +6,36 @@ first load, stores everything locally (job setup, records, photos) in
 IndexedDB, and has no backend and no third-party data collection.
 
 Diameters are captured with **automatic measurement**: after a one-time
-camera calibration (take one photo of your ruler, tap its two ends -
-never repeated after that), every "Take All 4 Photos" run measures the
-sand patch in each photo by itself - no taps, no per-test setup. This is
-real image segmentation (Otsu's method, a standard thresholding
-algorithm - see "Automatic measurement" below), not a black box: every
-result is visible on-screen immediately, so a bad read is never hidden,
-and every diameter field stays a plain editable number in case one needs
-correcting by hand. **Tap-to-measure** (tap a ruler and the patch edges
-directly on a photo) remains available as a manual fallback for any
-single photo where the automatic reading looks wrong. A separate, larger
-Version 2 placeholder - automatically finding *and* calibrating against
-two perpendicular rulers, with perspective correction, needing no manual
-calibration step at all (`SandPatchMeasurementEngine`, returns
-`NOT_IMPLEMENTED`) - remains deliberately unbuilt; do not build that until
-Version 1 is stable in real field use.
+camera calibration - take one photo of your ruler, and the app reads the
+ruler's own printed numbers to work out the scale itself, no taps at all
+in the normal case - every "Take All 4 Photos" run measures the sand
+patch in each photo by itself, with no taps and no per-test setup. This
+is real computer vision (OCR for calibration, Otsu-threshold image
+segmentation for the patch itself - see "Automatic measurement" below),
+not a black box: every result is visible on-screen immediately, so a bad
+read is never hidden, and every diameter field stays a plain editable
+number in case one needs correcting by hand. If the ruler's numbers can't
+be read automatically (poor lighting, glare, an unusual ruler), calibration
+falls back to two taps; **tap-to-measure** (tap a ruler and the patch
+edges directly on a photo) also remains available as a manual fallback
+for any single test photo where the automatic reading looks wrong. A
+separate, larger Version 2 placeholder - calibrating fresh from whatever
+rulers are visible in *every* photo independently, with perspective
+correction, rather than reusing one stored calibration across a whole job
+(`SandPatchMeasurementEngine`, returns `NOT_IMPLEMENTED`) - remains
+deliberately unbuilt; do not build that until Version 1 is stable in real
+field use.
 
 ## Main workflow
 
 1. **Job Setup** (`/job`) - road, contract/job number, lot number, operator,
    existing/proposed aggregate size, default sand volume, ruler length (the
    tap-to-measure fallback's calibration constant, default 300mm), and
-   **Calibrate Camera** (take one photo showing any part of the ruler,
-   tap two points on it, confirm the real distance between them - the one-
-   time reference automatic measurement scales every reading against).
-   Saved once, prefills every new record.
+   **Calibrate Camera** (take one photo showing any part of the ruler -
+   the app reads its printed numbers automatically, or falls back to
+   tapping two points and confirming the real distance between them if it
+   can't - the one-time reference automatic measurement scales every
+   reading against). Saved once, prefills every new record.
 2. **New Test** (`/`) - the main field screen. Road, chainage, direction,
    offset, control line, GPS, four photos, four diameters, live average
    diameter + texture depth, notes, Save Record. "Take All 4 Photos" drives
@@ -83,11 +88,12 @@ lib/calculations/     Average diameter, texture depth, READY/INCOMPLETE, formatt
 lib/gps/              Geolocation wrapper + GOOD/CHECK/POOR classification
 lib/images/           Camera photo compression, photo -> grayscale pixel extraction
 lib/export/           CSV, filename sanitisation/naming, ZIP, Excel lab form writer
-lib/measurement/      automatic detection + tap-to-measure geometry (Version 1), engine placeholder (Version 2)
+lib/measurement/      automatic detection, OCR ruler calibration + tap-to-measure geometry (V1), engine placeholder (V2)
 lib/validation/       Field validation (chainage/diameter/offset)
 types/                Job, SandPatchRecord, PhotoRecord, measurement types
 tests/                Vitest unit tests
 public/sw.js          Hand-rolled service worker (no next-pwa/Workbox)
+public/vendor/         Vendored OCR assets (Tesseract.js worker/core/trained-data) - never CDN-fetched
 scripts/              One-off dev utility: generates the placeholder PNG/ICO icons
 ```
 
@@ -127,13 +133,7 @@ only a ruler (or a known camera-to-ground distance) can. That reference is
 `Job.pixelsPerMm`, established once via **Calibrate Camera** in Job Setup
 (or inline, automatically, the first time "Take All 4 Photos" is used on a
 job that hasn't been calibrated yet) and reused for every reading
-afterwards - never re-derived per photo or per test. Calibration taps
-don't have to land on the ruler's two physical ends - a real calibration
-photo often only shows a segment of the ruler (zoomed in for a clear
-reading, or with an object crossing part of it), so the operator taps any
-two clearly marked points and confirms the real distance between them
-(defaulting to the job's full Ruler Length, but always editable - e.g.
-entering 80 after tapping a ruler's 150mm and 230mm marks).
+afterwards - never re-derived per photo or per test.
 `lib/images/grayscale.ts` decodes each photo into a small (400px) grayscale
 buffer first - detection measures pixel *area*, not fine edge detail, so
 analysing at full photo resolution would only cost time, not add accuracy.
@@ -142,6 +142,32 @@ This assumes the patch is lighter than the surrounding pavement (true for
 sand on a typical bitumen/asphalt seal) and reasonably centred in frame -
 see "Known limitations" below for what that means for a very different
 pavement colour, harsh shadows, or an off-centre shot.
+
+### Automatic camera calibration (reading the ruler)
+
+Calibration itself needs no taps either, in the normal case:
+`lib/measurement/ocrRuler.ts` runs OCR (Tesseract.js, vendored locally -
+see "Fully offline OCR" below) over the calibration photo and hands every
+recognized whole number, with its position and confidence, to
+`lib/measurement/readRuler.ts`'s `estimatePixelsPerMmFromRulerNumbers()`.
+That function doesn't try to identify *which* tokens are the real ruler
+markings and which are misreadings of background texture - instead it
+takes every pair of confidently-recognized numbers, computes the
+pixels-per-mm their positions and printed values would imply, and looks
+for the largest cluster of pairs that all imply essentially the same
+scale. Real ruler markings are evenly spaced and collinear, so dozens of
+pairs among them agree; a stray misread from carpet or gravel texture is
+effectively random and doesn't agree with anything, so it's outvoted
+rather than needing to be filtered individually. Verified against a real
+photo of a steel ruler partly obscured by an unrelated object: the actual
+ruler numbers were recognized at 93-96% confidence versus a handful of
+scattered false positives elsewhere in the frame at under 90%, and the
+consensus check reliably separated the two.
+
+When this doesn't find a confident enough consensus (poor lighting,
+glare, an unusual or very worn ruler), calibration falls back to the
+two-tap manual flow below rather than guessing - the operator always sees
+which happened and why.
 
 ### Tap-to-measure (manual fallback)
 
@@ -205,16 +231,38 @@ they simply have no corresponding field to draw from.
 `types/measurement.ts` defines the `SandPatchMeasurementEngine` interface
 and `MeasurementResult` shape (diameter1-4, averageDiameter, confidence,
 detectedBoundary, calibrationQuality, perspectiveCorrectionApplied,
-requiresManualReview) for a future pipeline that finds *and calibrates
-against* two perpendicular rulers automatically, with perspective
-correction, needing no manual calibration step at all - not even the
-one-time kind "Automatic measurement" above still requires. That one-time
-calibration step is the real, if narrow, gap between what's implemented
-now and this placeholder. `lib/measurement/notImplementedEngine.ts` is the
-only implementation and always returns `status: "NOT_IMPLEMENTED"` - it
-never fabricates diameters or a boundary from a photo. The New Test screen
-has a "Try Fully-Automatic Detection (Version 2 preview)" link that calls
-it, purely to show where this plugs in later.
+requiresManualReview) for a future pipeline that finds and calibrates
+against two perpendicular rulers fresh in *every* photo independently,
+with perspective correction - rather than what's implemented now, which
+establishes one calibration (automatically, from the ruler's printed
+numbers, in the normal case) and reuses it across an entire job. Reusing
+one calibration is what still makes automatic measurement's accuracy
+depend on a reasonably consistent camera-to-ground distance across a job
+(see "Known limitations") - recalibrating fresh every photo, as this
+placeholder would, is what closes that gap, at the cost of needing a
+ruler in frame for every single test photo rather than only once.
+`lib/measurement/notImplementedEngine.ts` is the only implementation and
+always returns `status: "NOT_IMPLEMENTED"` - it never fabricates diameters
+or a boundary from a photo. The New Test screen has a "Try Fully-Automatic
+Detection (Version 2 preview)" link that calls it, purely to show where
+this plugs in later.
+
+### Fully offline OCR
+
+Camera calibration's OCR (`lib/measurement/ocrRuler.ts`) uses
+[Tesseract.js](https://github.com/naptha/tesseract.js), which by default
+fetches its worker script, WASM engine, and trained-language data from a
+CDN the first time it runs - unacceptable for an app that must work
+offline after first load. All three are vendored into
+`public/vendor/tesseract/` instead (~15MB total: the worker script, the
+LSTM-only WASM core, and the full English trained-data file - the smaller
+int8-quantized trained-data variant was tested and rejected because it
+missed most of a real ruler's numbers that the full variant read
+correctly) and added to the service worker's install-time precache list
+alongside the Excel template, so calibration works on the very first
+offline use. Verified end-to-end with Playwright, monitoring every
+network request during a full calibration run against a real ruler photo:
+zero requests left `localhost`.
 
 ## Local development
 
@@ -358,6 +406,18 @@ serves from its own root).
   either. None of this is silent: every reading is shown on-screen
   immediately, and "Measure from Photo" is always available to override a
   reading by hand.
+- **Automatic camera calibration's OCR accuracy depends on the ruler
+  actually being legible**: glare off a shiny steel ruler, heavy motion
+  blur, extreme close-ups that cut off multiple digits, or a ruler with
+  faint/worn printing can all mean too few numbers are read confidently
+  enough to reach a consensus. When that happens the app says so and
+  falls back to the two-tap manual flow rather than guessing - it never
+  silently accepts a low-confidence reading.
+- **Tesseract.js's OCR is CPU-bound and single-threaded in this setup** -
+  a calibration read takes a few seconds on a typical phone (longer on an
+  older or lower-end device), during which the UI clearly shows "Reading
+  your ruler…". This only ever runs during the rare, one-time calibration
+  step, never per test photo.
 - **Tap-to-measure (the manual fallback) accuracy depends on the photo and
   the operator's taps**, not on any app-side correction: the ruler must
   actually be visible along the same line as the patch edges in the shot,

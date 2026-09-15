@@ -19,7 +19,7 @@
 // cleared on activate. This only ever touches the Cache Storage API for
 // static assets - it never touches IndexedDB (job/records/photos), which
 // lives in a completely separate storage area.
-const CACHE_VERSION = "v2";
+const CACHE_VERSION = "v3";
 const CACHE_NAME = `sandpatch-cache-${CACHE_VERSION}`;
 
 // Derived from this worker's own registration scope rather than
@@ -44,9 +44,14 @@ const APP_SHELL_URLS = ["/", "/records/", "/records/view/", "/job/", "/export/"]
 
 // Static assets fetched directly by app code (not linked from any page's
 // HTML, so the _next/ scraping below never finds them) that must still work
-// offline on the very first export - not only after the export screen has
-// successfully fetched them once online.
-const STATIC_PRECACHE_URLS = ["/templates/sand-patch-master.xlsx"].map((path) => `${BASE_PATH}${path}`);
+// offline on the very first export/calibration - not only after the
+// relevant screen has successfully fetched them once online.
+const STATIC_PRECACHE_URLS = [
+  "/templates/sand-patch-master.xlsx",
+  "/vendor/tesseract/worker.min.js",
+  "/vendor/tesseract/tesseract-core-lstm.wasm.js",
+  "/vendor/tesseract/eng.traineddata.gz",
+].map((path) => `${BASE_PATH}${path}`);
 
 // The tab that triggers installing this service worker is NOT controlled
 // by it (browsers only hand control to a new SW from the next navigation
