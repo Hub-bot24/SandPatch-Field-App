@@ -24,8 +24,8 @@ intentionally a placeholder (`SandPatchMeasurementEngine`) that returns
    chainage ascending. Tap a card to view, edit, or delete (with
    confirmation) a record.
 4. **Export** (`/export`) - Export Job produces a ZIP: a CSV of every
-   record plus a `photos/` folder, named
-   `Road_Chainage_Direction_PhotoN.jpg`.
+   record, the populated Sand Patch lab Excel form, and a `photos/`
+   folder, named `Road_Chainage_Direction_PhotoN.jpg`.
 
 ## Calculations (exact, no invented allowances)
 
@@ -59,7 +59,7 @@ lib/db/               IndexedDB (via idb): schema + versioned migrations, reposi
 lib/calculations/     Average diameter, texture depth, READY/INCOMPLETE, formatting
 lib/gps/              Geolocation wrapper + GOOD/CHECK/POOR classification
 lib/images/           Camera photo compression (resize + re-encode to JPEG)
-lib/export/           CSV, filename sanitisation/naming, ZIP, Excel-template placeholder
+lib/export/           CSV, filename sanitisation/naming, ZIP, Excel lab form writer
 lib/measurement/      SandPatchMeasurementEngine placeholder (Version 2)
 lib/validation/       Field validation (chainage/diameter/offset)
 types/                Job, SandPatchRecord, PhotoRecord, measurement types
@@ -81,13 +81,40 @@ an additive `upgrade()` migration function. Future versions add
 `if (oldVersion < N)` blocks that create/extend stores - never drop a store
 or clear data.
 
-### Future Excel export
+### Excel lab form export
 
 `lib/export/exportData.ts`'s `buildExportDataset()` is the single source of
-truth consumed by both the CSV export and (in the future) an Excel template
-writer. `lib/export/excelExport.ts` is an isolated, unimplemented stub
-(`exportToExcelTemplate()` throws `NOT_IMPLEMENTED`) so that feature can be
-added later without touching CSV/ZIP export or the capture screens.
+truth consumed by both the CSV export and `lib/export/excelExport.ts`'s
+`exportToExcelTemplate()`, which populates the real lab template at
+`public/templates/sand-patch-master.xlsx` and is bundled into the export
+ZIP alongside the CSV as `sand_patch_lab_form.xlsx`.
+
+The template's data area is a fixed 18 rows per sheet - a job with more
+than 18 records gets one full copy of the sheet per batch of 18, all
+inside the one workbook, so there is no cap on how many records an export
+can hold. Only genuine input cells (road, chainage, offset, direction,
+control line, the four diameters, sand volume, existing aggregate size,
+notes) are ever written. The average-diameter/texture-depth formulas and
+the columns that reference an external "AllowanceAdjustments" workbook are
+never touched or reimplemented, per this project's rule against inventing
+seal-design/allowance logic - if that external workbook isn't reachable
+from wherever the exported file is opened, those cells show the same
+`#N/A` the blank template itself shows, which is expected, not a bug this
+app introduced.
+
+exceljs's writer silently drops the workbook-level *registration* of that
+external link (while still preserving each formula's text) on a plain
+read-and-write round trip - confirmed by diffing the raw zip parts before
+and after. `restoreExternalLinkRegistration()` copies the two external-link
+parts back from the original template bytes and re-adds the
+`workbook.xml`/`.rels`/`[Content_Types].xml` entries exceljs strips, after
+exceljs finishes writing everything else.
+
+A handful of header fields the template has no app data for (Customer, Lab
+Sample No, Purchase Order/Test Request #, Project/Site Number, Existing
+Pavement Surface, Sand Patch Mould ID) are left exactly as blank as the
+template itself, rather than guessed - the underlying data is unaffected,
+they simply have no corresponding field to draw from.
 
 ### Version 2 placeholder
 
@@ -236,8 +263,10 @@ serves from its own root).
   slightly by browser but always resolves to one of those same states.
 - **Offline is guaranteed only after a first online visit** actually
   fetches the app's pages/assets (the service worker also proactively
-  precaches the five known routes and their JS/CSS at install time, so a
-  single visit to `/` while online is normally enough).
+  precaches the five known routes and their JS/CSS, plus the Excel lab
+  form template, at install time, so a single visit to `/` while online is
+  normally enough - including for an Excel export on the very first
+  offline use).
 - **Static export constraints**: no server-side API routes, middleware, or
   image optimization are used or available in Version 1, by design (no
   backend is required or wanted).

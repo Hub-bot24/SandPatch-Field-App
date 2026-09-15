@@ -1,3 +1,4 @@
+import { getJob } from "@/lib/db/jobRepository";
 import { buildExportDataset, type ExportRow } from "./exportData";
 import { buildExportZip } from "./zipExport";
 import { sanitiseFilename } from "./filename";
@@ -37,8 +38,8 @@ function downloadBlob(blob: Blob, filename: string): void {
 
 /** Builds the export ZIP from the latest data and triggers a browser download. */
 export async function exportJob(jobLabel: string): Promise<ExportSummary> {
-  const rows = await buildExportDataset();
-  const zipBlob = await buildExportZip(rows);
+  const [rows, job] = await Promise.all([buildExportDataset(), getJob()]);
+  const zipBlob = await buildExportZip(rows, job);
 
   const datePart = new Date().toISOString().slice(0, 10);
   const filename = `SandPatch_${sanitiseFilename(jobLabel || "Export")}_${datePart}.zip`;
