@@ -158,6 +158,7 @@ function writeHeader(sheet: ExcelJS.Worksheet, job: Job | null, chunkRows: Expor
     writeNumericOrText(sheet.getCell("H9"), job.existingAggregateSize);
     writeNumericOrText(sheet.getCell("H10"), job.proposedAggregateSize);
     sheet.getCell("AB8").value = job.operator || null;
+    sheet.getCell("V12").value = job.rulerLengthMm ? `${job.rulerLengthMm} mm` : null;
   }
   const dateRange = formatSampledDateRange(chunkRows);
   sheet.getCell("AB7").value = dateRange || null;

@@ -1,11 +1,15 @@
 import { getDb } from "./client";
 import { JOB_SETTINGS_ID, STORE_JOB_SETTINGS } from "./schema";
-import type { Job, JobInput } from "@/types/job";
+import { DEFAULT_RULER_LENGTH_MM, type Job, type JobInput } from "@/types/job";
 
 export async function getJob(): Promise<Job | null> {
   const db = await getDb();
   const job = await db.get(STORE_JOB_SETTINGS, JOB_SETTINGS_ID);
-  return job ?? null;
+  if (!job) return null;
+  // A job saved before rulerLengthMm existed won't have it in IndexedDB -
+  // default it at the read boundary rather than requiring a schema migration
+  // for what is otherwise a same-shape additive field.
+  return { ...job, rulerLengthMm: job.rulerLengthMm ?? DEFAULT_RULER_LENGTH_MM };
 }
 
 export async function saveJob(input: JobInput): Promise<Job> {
