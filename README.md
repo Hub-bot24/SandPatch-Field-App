@@ -142,24 +142,11 @@ git remote add origin <your-empty-github-repo-url>
 git push -u origin main
 ```
 
-## Deploying to GitHub Pages (no external account needed)
+## Deploying to Vercel (recommended)
 
-`.github/workflows/deploy-pages.yml` builds and publishes the app to GitHub
-Pages automatically on every push to `main`. GitHub Pages serves a project
-repository at `https://<owner>.github.io/<repo-name>/` rather than a domain
-root, so the workflow passes `NEXT_PUBLIC_BASE_PATH` (auto-detected from the
-repo name via `actions/configure-pages`) into the build - see `lib/config.ts`
-and `next.config.ts`. Locally, or on a host that serves from the root
-(Vercel, Netlify, ...), this variable is simply unset and the app behaves
-exactly as if there were no subpath.
-
-**One-time setup** (repository owner only, cannot be done via the API used
-here): go to the repo's **Settings -> Pages**, and under "Build and
-deployment", set **Source** to **GitHub Actions**. After that, every push to
-`main` deploys automatically - the live URL appears on that same Settings
-page and in the workflow run's summary.
-
-## Deploying to Vercel (alternative)
+Vercel's free tier deploys **private** GitHub repositories with no
+restriction - the source stays private, only the built app becomes a public
+URL, like any website.
 
 1. Sign up/log in at vercel.com, ideally with **Continue with GitHub** using
    the account that owns this repo - no separate password needed.
