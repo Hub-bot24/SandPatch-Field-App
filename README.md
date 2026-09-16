@@ -166,14 +166,42 @@ plain steel ruler's own background - confirmed against a real ruler
 printed with red major numbers, where the standard pass alone read none
 of them, anywhere in the photo, at any confidence. The two passes'
 results are merged before bracketing (`measurePatch.ts`'s
-`recognizeRulerNumbersAcrossChannels()`), so this roughly doubles one
-photo's OCR time in exchange for being able to read that ruler at all.
-Reading twice also means a stray high-confidence misread from one pass
-can end up paired with a genuine number from the other; `readMmAtEdge()`
-rejects any candidate below 10 (a ruler's own numbers are never a bare
-single digit) specifically because a real photo's background texture
-produced a confident, plausible-looking single-digit "match" that very
-nearly bracketed into a fabricated measurement before this guard existed.
+`readRulerAcrossChannels()`), so this roughly doubles one photo's OCR
+time in exchange for being able to read that ruler at all. Reading twice
+also means a stray high-confidence misread from one pass can end up
+paired with a genuine number from the other; `readMmAtEdge()` rejects any
+candidate below 10 (a ruler's own numbers are never a bare single digit)
+specifically because a real photo's background texture produced a
+confident, plausible-looking single-digit "match" that very nearly
+bracketed into a fabricated measurement before this guard existed.
+
+**2b. Re-reading candidates with a second, more capable reader
+(experimental, unverified)** - `lib/measurement/trocrRuler.ts` adds a
+third pass using [TrOCR](https://huggingface.co/docs/transformers/model_doc/trocr)
+(a transformer model, via [transformers.js](https://github.com/huggingface/transformers.js)),
+run only on the specific small regions Tesseract already found *something*
+in near the scanned line (`ocrRuler.ts`'s `recognizeRulerText()` now
+returns every word-shaped region alongside the cleanly-recognized
+numbers, for exactly this) - not a fourth full-photo OCR pass. This
+exists because tuning Tesseract itself - the red-ink pass, the
+page-segmentation mode, reading the nearest pair instead of requiring a
+strict bracket - measurably helped but hit a real ceiling: on six real
+test photos, several still had OCR find fewer than two confident numbers
+anywhere near an edge, and cropping tighter or trying several rotation
+angles on those exact photos made no difference. Tesseract's classic
+engine was built for scanned documents; a model trained on real,
+photographed text is expected to read a meaningfully larger share of
+those same photos correctly. **That expectation has not been verified
+against a real device or a real photo** - this environment's own network
+policy blocks downloading the model to test with, unlike every other
+change in this file, which was checked against real photos before being
+described here. A failure to load the model (no network yet, an
+unsupported browser) is caught and simply skipped - the photo still gets
+whatever the Tesseract passes above found, exactly as before this pass
+existed; this addition can only add candidate readings, never remove
+ones Tesseract already provided. `MAX_TROCR_CANDIDATES` caps how many
+regions get this slower second look, bounding one photo's worst-case
+added latency regardless of how noisy its background turns out to be.
 
 **3. Reading each edge directly off those numbers** -
 `lib/measurement/readRulerAtEdge.ts`'s `readDiameterFromEdges()` is the
@@ -322,6 +350,20 @@ alongside the Excel template, so automatic measurement works on the very
 first offline use. Verified end-to-end with Playwright, monitoring every
 network request during a full guided-capture run against real ruler
 photos: zero requests left `localhost`.
+
+The TrOCR model the experimental re-reading pass above uses (see
+`lib/measurement/trocrRuler.ts`) is **not** vendored the same way, and is
+not part of "the very first offline use" the way Tesseract's assets are.
+It's tens of times larger than Tesseract's ~15MB - too large to reasonably
+commit to the repo - so it's fetched from the Hugging Face Hub the first
+time it's actually needed and cached from then on by the browser's own
+Cache API (`transformers.js`'s default behaviour, `env.useBrowserCache`).
+That first fetch needs a real network connection; every use after that is
+offline, the same as the rest of this app, just with a bigger one-time
+download than Tesseract's before that first use. If that fetch fails (no
+network yet, a restrictive network policy, an unsupported browser), the
+photo simply keeps whatever the always-offline Tesseract passes above
+found - see 2b above.
 
 ## Local development
 
@@ -526,6 +568,24 @@ serves from its own root).
   Tesseract worker is reused across all four photos in a run rather than
   restarted for each one, which keeps this to roughly the cost of OCR
   itself, not repeated start-up overhead.
+- **The TrOCR re-reading pass (see "Reading the ruler's numbers" -> 2b
+  above) is genuinely unverified, in both directions - accuracy and
+  speed.** Every other measurement change in this project was checked
+  against real photos before being described as fixing anything; this one
+  hasn't been, because downloading the model to test with is blocked by
+  this specific development environment's own network policy, not
+  anything about the app or a real phone. It is expected to read more of
+  a real photo's ruler numbers correctly than Tesseract does (transformer
+  OCR models are generally far more capable on messy, real-world text
+  than Tesseract's classic engine, which targets scanned documents) - but
+  "expected" is doing real work in that sentence until it's been run for
+  real. Speed is even less certain: transformer inference is typically
+  heavier per call than Tesseract's, so per-candidate re-reads could add
+  meaningful time on top of the Tesseract passes above, on a low-end
+  phone particularly. A failed or slow model load never blocks a
+  measurement - the photo keeps whatever Tesseract alone found - but
+  until this has run against real photos on a real device, treat any
+  accuracy or speed claim about this specific pass as unconfirmed.
 - **Tap-to-measure (the manual fallback) accuracy depends on the photo and
   the operator's taps**, not on any app-side correction: the ruler must
   actually be visible along the same line as the patch edges in the shot,

@@ -52,8 +52,16 @@ const MIN_RULER_VALUE = 10;
 /** Implied local scale outside this pixels-per-mm range indicates a misread digit, not a real ruler marking - wide enough to cover both a close-up macro shot and a wide-angle full-patch shot. */
 const MIN_PLAUSIBLE_PX_PER_MM = 0.1;
 const MAX_PLAUSIBLE_PX_PER_MM = 50;
-/** How far (as a fraction of the photo's height) a ruler number may sit from the scanned band and still count as "on the same line" as the edge - generous, since a ruler has physical width and printed numbers sit somewhere across it, not exactly on the scanned centerline. */
-const Y_TOLERANCE_FRACTION = 0.25;
+/**
+ * How far (as a fraction of the photo's height) a ruler number may sit
+ * from the scanned band and still count as "on the same line" as the
+ * edge - generous, since a ruler has physical width and printed numbers
+ * sit somewhere across it, not exactly on the scanned centerline.
+ * Exported so measurePatch.ts can apply the same "same line as the edge"
+ * test before spending a slower TrOCR reading on a candidate region that
+ * readMmAtEdge would exclude by position anyway.
+ */
+export const Y_TOLERANCE_FRACTION = 0.25;
 /** How far past the anchor pair this will extrapolate, as a multiple of the pixel distance between them - a small multiple, since projecting a two-point local scale a long way past where it was actually measured is exactly how a lens/perspective quirk or a borderline misread turns into a confidently wrong answer instead of an obviously wrong one. */
 const MAX_EXTRAPOLATION_FACTOR = 3;
 
