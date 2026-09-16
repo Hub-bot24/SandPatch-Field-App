@@ -614,7 +614,6 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
           ref={guidedInputRef}
           type="file"
           accept="image/*"
-          capture="environment"
           className="hidden"
           aria-label="Guided capture"
           onChange={handleGuidedFileChange}
