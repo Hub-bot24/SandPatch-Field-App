@@ -7,6 +7,8 @@ import { computeTapMeasurement, type TapPoint } from "@/lib/measurement/tapMeasu
 interface TapMeasureOverlayProps {
   photoUrl: string;
   photoLabel: string;
+  /** Shown under the header when set - e.g. explaining that this photo landed here because automatic reading couldn't run, not because the operator chose manual entry. Omitted for a deliberate "Measure from Photo" open. */
+  note?: string;
   /** Real-world length, in mm, of the ruler the operator will tap the two ends of - see Job Setup. */
   calibrationLengthMm: number;
   onConfirm: (diameterMm: number) => void;
@@ -46,6 +48,7 @@ function stepPrompt(step: number, calibrationLengthMm: number): string {
 export function TapMeasureOverlay({
   photoUrl,
   photoLabel,
+  note,
   calibrationLengthMm,
   onConfirm,
   onCancel,
@@ -91,7 +94,10 @@ export function TapMeasureOverlay({
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-black">
       <div className="flex items-center justify-between gap-2 bg-black/80 px-4 py-3 text-white">
-        <span className="text-sm font-semibold">{photoLabel}: Tap to Measure</span>
+        <div>
+          <span className="text-sm font-semibold">{photoLabel}: Tap to Measure</span>
+          {note && <p className="text-xs text-white/70">{note}</p>}
+        </div>
         <button type="button" onClick={onCancel} className="min-h-11 px-2 text-sm font-semibold text-white/80">
           Cancel
         </button>

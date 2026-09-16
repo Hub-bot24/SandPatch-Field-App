@@ -139,7 +139,17 @@ OCR (Tesseract.js, vendored locally - see "Fully offline OCR" below) over
 the same photo and returns every cleanly-recognized whole number, with
 its position and confidence. One Tesseract worker is created per guided-
 capture run and reused across all four photos (`createRulerOcrWorker()`),
-rather than paying its start-up cost four times over.
+rather than paying its start-up cost four times over - but only lazily,
+the first time a photo actually needs measuring
+(`components/record/SandPatchRecordForm.tsx`'s `ensureOcrWorker()`), never
+in parallel with opening the camera for a shot that hasn't been taken yet.
+Mobile browsers can suspend or heavily throttle a backgrounded page's
+JavaScript - including in-flight Worker/WASM start-up - while a native
+camera app has the foreground; starting the worker as soon as "Take All 4
+Photos" was tapped, racing against exactly that hand-off, broke automatic
+measurement outright on a real phone before this was caught. If a given
+attempt fails, the next photo tries again rather than the whole run being
+permanently stuck falling back to manual measurement.
 
 **3. Reading each edge directly off those numbers** -
 `lib/measurement/readRulerAtEdge.ts`'s `readDiameterFromEdges()` is the
