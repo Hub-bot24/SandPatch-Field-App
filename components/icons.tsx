@@ -161,6 +161,16 @@ export function IconWifiOff(props: IconProps) {
   );
 }
 
+export function IconShare(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 15V3" />
+      <path d="M7 8l5-5 5 5" />
+      <path d="M4 19h16" />
+    </Icon>
+  );
+}
+
 export function IconChevronDown(props: IconProps) {
   return (
     <Icon {...props}>

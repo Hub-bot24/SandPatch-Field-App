@@ -634,6 +634,7 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
         <PhotoCaptureSlot
           label="Photo 1"
           previewUrl={previewUrls[1] ?? null}
+          photoBlob={photos[1]?.blob ?? null}
           onCapture={(f) => handlePhotoCapture(1, f)}
           onRemove={() => handlePhotoRemove(1)}
           busy={busyPhoto === 1}
@@ -661,6 +662,7 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
         <PhotoCaptureSlot
           label="Photo 2"
           previewUrl={previewUrls[2] ?? null}
+          photoBlob={photos[2]?.blob ?? null}
           onCapture={(f) => handlePhotoCapture(2, f)}
           onRemove={() => handlePhotoRemove(2)}
           busy={busyPhoto === 2}
@@ -688,6 +690,7 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
         <PhotoCaptureSlot
           label="Photo 3"
           previewUrl={previewUrls[3] ?? null}
+          photoBlob={photos[3]?.blob ?? null}
           onCapture={(f) => handlePhotoCapture(3, f)}
           onRemove={() => handlePhotoRemove(3)}
           busy={busyPhoto === 3}
@@ -715,6 +718,7 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
         <PhotoCaptureSlot
           label="Photo 4"
           previewUrl={previewUrls[4] ?? null}
+          photoBlob={photos[4]?.blob ?? null}
           onCapture={(f) => handlePhotoCapture(4, f)}
           onRemove={() => handlePhotoRemove(4)}
           busy={busyPhoto === 4}
