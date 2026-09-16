@@ -137,19 +137,43 @@ against the background noise level) - purely informational, never a gate.
 **2. Reading the ruler's numbers** - `lib/measurement/ocrRuler.ts` runs
 OCR (Tesseract.js, vendored locally - see "Fully offline OCR" below) over
 the same photo and returns every cleanly-recognized whole number, with
-its position and confidence. One Tesseract worker is created per guided-
-capture run and reused across all four photos (`createRulerOcrWorker()`),
-rather than paying its start-up cost four times over - but only lazily,
-the first time a photo actually needs measuring
-(`components/record/SandPatchRecordForm.tsx`'s `ensureOcrWorker()`), never
-in parallel with opening the camera for a shot that hasn't been taken yet.
-Mobile browsers can suspend or heavily throttle a backgrounded page's
-JavaScript - including in-flight Worker/WASM start-up - while a native
-camera app has the foreground; starting the worker as soon as "Take All 4
-Photos" was tapped, racing against exactly that hand-off, broke automatic
-measurement outright on a real phone before this was caught. If a given
-attempt fails, the next photo tries again rather than the whole run being
-permanently stuck falling back to manual measurement.
+its position and confidence. The worker is created with page-segmentation
+mode `SPARSE_TEXT` rather than Tesseract's default: the default assumes a
+structured page (paragraphs, columns), a poor match for a few large,
+isolated numbers scattered across a photo of sand and asphalt - confirmed
+against a real photo to be both roughly 3x faster (it skips looking for
+page structure that was never there) and more accurate (it read numbers
+the default mode missed completely). One Tesseract worker is created per
+guided-capture run and reused across all four photos
+(`createRulerOcrWorker()`), rather than paying its start-up cost four
+times over - but only lazily, the first time a photo actually needs
+measuring (`components/record/SandPatchRecordForm.tsx`'s
+`ensureOcrWorker()`), never in parallel with opening the camera for a shot
+that hasn't been taken yet. Mobile browsers can suspend or heavily
+throttle a backgrounded page's JavaScript - including in-flight
+Worker/WASM start-up - while a native camera app has the foreground;
+starting the worker as soon as "Take All 4 Photos" was tapped, racing
+against exactly that hand-off, broke automatic measurement outright on a
+real phone before this was caught. If a given attempt fails, the next
+photo tries again rather than the whole run being permanently stuck
+falling back to manual measurement.
+
+Each photo is actually read **twice**: once as-is, and once through
+`lib/images/redIsolate.ts`, which keeps only "how red" each pixel is as
+brightness. Standard grayscale conversion averages a red pixel's high red
+channel with its low green/blue into a mid-grey barely different from a
+plain steel ruler's own background - confirmed against a real ruler
+printed with red major numbers, where the standard pass alone read none
+of them, anywhere in the photo, at any confidence. The two passes'
+results are merged before bracketing (`measurePatch.ts`'s
+`recognizeRulerNumbersAcrossChannels()`), so this roughly doubles one
+photo's OCR time in exchange for being able to read that ruler at all.
+Reading twice also means a stray high-confidence misread from one pass
+can end up paired with a genuine number from the other; `readMmAtEdge()`
+rejects any candidate below 10 (a ruler's own numbers are never a bare
+single digit) specifically because a real photo's background texture
+produced a confident, plausible-looking single-digit "match" that very
+nearly bracketed into a fabricated measurement before this guard existed.
 
 **3. Reading each edge directly off those numbers** -
 `lib/measurement/readRulerAtEdge.ts`'s `readDiameterFromEdges()` is the
@@ -455,13 +479,29 @@ serves from its own root).
   camera. None of this is silent: every reading is shown on-screen
   immediately, and "Measure from Photo" is always available to override a
   reading, or supply one, by hand.
-- **Tesseract.js's OCR is CPU-bound and single-threaded in this setup** -
-  each photo's read takes a few seconds on a typical phone (longer on an
-  older or lower-end device), during which the UI shows "Measuring Photo
-  N…"; across all four photos in a guided-capture run this adds up to
-  more total time than the single one-off calibration read a previous
-  version of this app used, in exchange for not needing that calibration
-  step, or its consistent-camera-distance assumption, at all. One
+- **Reading the ruler twice (standard + red-isolated, above) and tuning
+  OCR's page-segmentation mode measurably improved both speed and how
+  much of a real ruler gets read - but did not make automatic measurement
+  reliable on every real photo, and won't.** Tested directly against real
+  field photos: edge detection can succeed while OCR still doesn't find
+  legible numbers bracketing *both* sides of a given edge - it found only
+  one real number on one side of the patch in one photo, and none at all
+  near either edge in another with harsh shadow cutting across the ruler
+  and glare off the metal. Both correctly fell back to an empty field
+  rather than guessing, which is the point of the `null`-not-a-guess
+  design - but it means manual tap-to-measure is a real, expected part of
+  a job, not a rare exception, until a photo's ruler happens to have
+  enough legible numbers positioned on both sides of the patch.
+- **Tesseract.js's OCR is CPU-bound and single-threaded in this setup.**
+  Measured directly against real ruler photos (not a synthetic test
+  image) in a desktop browser: a single full-resolution pass with
+  Tesseract's default page-segmentation mode took over 30 seconds;
+  switching to the `SPARSE_TEXT` mode described above cut that roughly
+  4x. Reading each photo twice (standard + red-isolated) still roughly
+  doubles whichever of those numbers applies. A real phone, especially an
+  older or lower-end one, should be expected to land somewhere in this
+  same range rather than the sub-second reads a document-scanning app
+  might suggest - during which the UI shows "Measuring Photo N…". One
   Tesseract worker is reused across all four photos in a run rather than
   restarted for each one, which keeps this to roughly the cost of OCR
   itself, not repeated start-up overhead.

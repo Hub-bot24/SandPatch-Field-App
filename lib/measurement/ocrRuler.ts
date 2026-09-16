@@ -39,13 +39,22 @@ export type RulerOcrWorker = Awaited<ReturnType<CreateWorkerFn>>;
  * run finishes.
  */
 export async function createRulerOcrWorker(): Promise<RulerOcrWorker> {
-  const { createWorker, OEM } = await import("tesseract.js");
-  return createWorker(LANG, OEM.LSTM_ONLY, {
+  const { createWorker, OEM, PSM } = await import("tesseract.js");
+  const worker = await createWorker(LANG, OEM.LSTM_ONLY, {
     workerPath: WORKER_PATH,
     corePath: CORE_PATH,
     langPath: LANG_PATH,
     gzip: true,
   });
+  // Tesseract defaults to assuming a page of structured text (paragraphs,
+  // columns) - a poor match for a few large, isolated numbers scattered
+  // across a photo of sand and asphalt. "Sparse text" mode, built for
+  // exactly that shape of input, was confirmed against a real ruler photo
+  // to be both dramatically faster (roughly 3x, since it skips trying to
+  // find page/column structure that was never there) and more accurate
+  // (it found numbers the default mode missed completely).
+  await worker.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT });
+  return worker;
 }
 
 interface OcrWord {

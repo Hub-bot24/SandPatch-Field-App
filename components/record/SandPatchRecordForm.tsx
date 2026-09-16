@@ -599,6 +599,10 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
           Frame each shot the way you&rsquo;d take the real reading: the ruler laid across the patch,
           running left-to-right, with its printed numbers clearly visible near both edges of the sand.
         </p>
+        <p className="text-sm text-ink-muted">
+          Keep the ruler evenly lit end to end - a hard shadow (often your own) across part of it, or
+          glare off the metal, can make that stretch of numbers unreadable no matter how sharp the photo is.
+        </p>
         <Button fullWidth onClick={startGuidedCapture} disabled={guidedCaptureActive}>
           {guidedCaptureActive
             ? autoDetectBusy

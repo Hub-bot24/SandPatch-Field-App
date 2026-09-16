@@ -25,6 +25,16 @@ type EdgeGeometry = Pick<DetectedEdges, "leftEdgeX" | "rightEdgeX" | "bandCenter
 
 /** Below this OCR confidence (0-100), a recognized digit is too likely to be a misread to anchor a measurement on. */
 const MIN_CONFIDENCE = 80;
+/**
+ * A ruler's own printed numbers are never a bare single digit (the
+ * smallest is "0" at one end, then straight to "10", "20"...) - a
+ * recognized single digit is stray noise from busy sand/asphalt texture,
+ * not a real ruler mark, confirmed directly: on a real photo, a
+ * high-confidence stray "4" from the background very nearly bracketed a
+ * genuine "100" into a fabricated measurement, passing every other check
+ * (confidence, distinct values, plausible implied scale) before this one.
+ */
+const MIN_RULER_VALUE = 10;
 /** Implied local scale outside this pixels-per-mm range indicates a misread digit, not a real ruler marking - wide enough to cover both a close-up macro shot and a wide-angle full-patch shot. */
 const MIN_PLAUSIBLE_PX_PER_MM = 0.1;
 const MAX_PLAUSIBLE_PX_PER_MM = 50;
@@ -51,6 +61,7 @@ export function readMmAtEdge(
   const candidates = tokens.filter(
     (t) =>
       t.confidence >= MIN_CONFIDENCE &&
+      t.value >= MIN_RULER_VALUE &&
       Number.isFinite(t.value) &&
       Number.isFinite(t.x) &&
       Number.isFinite(t.y) &&
