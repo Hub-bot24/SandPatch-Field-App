@@ -114,6 +114,27 @@ describe("detectPatchEdges", () => {
     expect(detectPatchEdges(image)).toBeNull();
   });
 
+  it("ignores a strong edge right at the very frame boundary, finding the true interior patch edge instead", () => {
+    // A boundary artifact (crop line, vignetting) can be a sharper
+    // brightness jump than the real patch edge - confirmed directly
+    // against a real photo where this made the detector report almost
+    // the entire frame as "the patch". The one-column spike at x=0 here
+    // (magnitude 225) is deliberately stronger than the true patch edge
+    // (magnitude 190 at x=99/100), so this only passes once the frame
+    // margin excludes it from being a candidate at all.
+    const width = 300;
+    const height = 100;
+    const data = new Uint8ClampedArray(width * height).fill(30);
+    for (let y = 0; y < height; y++) {
+      for (let x = 100; x < 220; x++) data[y * width + x] = 220;
+      data[y * width + 0] = 255;
+    }
+    const result = detectPatchEdges({ width, height, data });
+    expect(result).not.toBeNull();
+    expect(result?.leftEdgeX).toBe(99);
+    expect(result?.rightEdgeX).toBe(219);
+  });
+
   it("returns null for an image too narrow to have two distinct halves", () => {
     const data = new Uint8ClampedArray(3 * 10).fill(128);
     expect(detectPatchEdges({ width: 3, height: 10, data })).toBeNull();
