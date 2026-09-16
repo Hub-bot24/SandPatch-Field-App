@@ -14,10 +14,16 @@ interface PhotoCaptureSlotProps {
 }
 
 /**
- * One of the four photo slots. Uses a native file input with
- * `capture="environment"` (opens the rear camera directly on iOS/Android)
- * rather than a custom getUserMedia stream, which is far more reliable
- * across mobile browsers.
+ * One of the four photo slots. Uses a native file input (rather than a
+ * custom getUserMedia stream, which is far more reliable across mobile
+ * browsers) with no `capture` attribute, so the OS shows its normal
+ * "Camera or Photo Library" chooser - a field re-take still just taps
+ * Camera, but a photo already on the phone (taken moments ago, sent by a
+ * colleague, or needed for a retest) can be picked instead of forcing a
+ * fresh shot. An earlier version set `capture="environment"` to jump
+ * straight to the camera, which turned out to make already-taken photos
+ * unusable for this exact slot - a real field complaint, not a
+ * theoretical one.
  */
 export function PhotoCaptureSlot({
   label,
@@ -45,7 +51,6 @@ export function PhotoCaptureSlot({
         ref={inputRef}
         type="file"
         accept="image/*"
-        capture="environment"
         onChange={handleFileChange}
         className="hidden"
         aria-label={label}
