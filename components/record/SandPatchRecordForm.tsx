@@ -121,9 +121,12 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
   // photo, or one step of the guided "take all 4" run (guidedPhotoNumberRef
   // holds which slot the *next* file-input capture belongs to, since the
   // native camera picker is triggered imperatively, not through React state).
-  const [measureState, setMeasureState] = useState<{ photoNumber: PhotoNumber; objectUrl: string } | null>(
-    null,
-  );
+  // `autoFailed` distinguishes "automatic reading couldn't run for this
+  // photo" from a deliberate "Measure from Photo" click, so the overlay can
+  // say which happened rather than looking identical either way.
+  const [measureState, setMeasureState] = useState<
+    { photoNumber: PhotoNumber; objectUrl: string; autoFailed: boolean } | null
+  >(null);
   const [guidedCaptureActive, setGuidedCaptureActive] = useState(false);
   const guidedInputRef = useRef<HTMLInputElement>(null);
   const guidedPhotoNumberRef = useRef<PhotoNumber | null>(null);
@@ -131,11 +134,17 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
 
   // One Tesseract worker per guided-capture run, shared across all 4
   // photos (see lib/measurement/ocrRuler.ts) rather than paying its
-  // start-up cost four times over. Kicked off in parallel with opening the
-  // camera for photo 1 - awaited only once a photo actually needs
-  // measuring, by which point it has almost always already finished
-  // loading. Null once the run ends (success or otherwise) or on unmount.
-  const ocrWorkerPromiseRef = useRef<Promise<RulerOcrWorker | null> | null>(null);
+  // start-up cost four times over. Deliberately created lazily, inside
+  // handleGuidedFileChange, only once a photo has actually come back from
+  // the camera - never kicked off while a photo capture might still be in
+  // progress. Mobile browsers can suspend or heavily throttle a page's JS
+  // (including in-flight Worker/WASM start-up) while the native camera
+  // app has the foreground, and starting the worker in parallel with
+  // opening the camera - which this used to do, as a speed optimisation -
+  // raced against exactly that, breaking automatic measurement outright on
+  // at least one real phone. Null until first needed, and again once the
+  // run ends (success or otherwise) or on unmount.
+  const ocrWorkerRef = useRef<RulerOcrWorker | null>(null);
 
   const appliedJobDefaultsRef = useRef(false);
   const savedIdsRef = useRef<Set<string>>(new Set());
@@ -282,10 +291,10 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
 
   // Safety net matching the object-URL cleanup pattern above: if the
   // component unmounts mid-run (e.g. navigating away) with a worker still
-  // loaded or loading, terminate it rather than leaking it silently.
+  // loaded, terminate it rather than leaking it silently.
   useEffect(() => {
     return () => {
-      void ocrWorkerPromiseRef.current?.then((worker) => worker?.terminate()).catch(() => {});
+      ocrWorkerRef.current?.terminate().catch(() => {});
     };
   }, []);
 
@@ -309,14 +318,19 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
 
   function startGuidedCapture() {
     setGuidedCaptureActive(true);
-    // Kicked off now, in parallel with the operator taking photo 1 in
-    // their camera app - by the time handleGuidedFileChange actually needs
-    // it, it has almost always already finished loading. Triggering the
-    // camera stays synchronous within this click handler (some browsers
-    // require that for a file input's native picker to open), so this is
-    // deliberately not awaited here.
-    ocrWorkerPromiseRef.current = createRulerOcrWorker().catch(() => null);
     triggerGuidedCapture(1);
+  }
+
+  /** Returns this run's shared OCR worker, creating it on first call. Retries on the next photo rather than giving up for the whole run if a given attempt fails - a transient hiccup on one photo shouldn't force every remaining photo into manual measurement. */
+  async function ensureOcrWorker(): Promise<RulerOcrWorker | null> {
+    if (ocrWorkerRef.current) return ocrWorkerRef.current;
+    try {
+      const worker = await createRulerOcrWorker();
+      ocrWorkerRef.current = worker;
+      return worker;
+    } catch {
+      return null;
+    }
   }
 
   async function handleGuidedFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -328,14 +342,14 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
     // Compress + persist in the background - it never blocks measurement.
     void handlePhotoCapture(photoNumber, file);
 
-    const worker = ocrWorkerPromiseRef.current ? await ocrWorkerPromiseRef.current : null;
+    const worker = await ensureOcrWorker();
     if (!worker) {
-      // OCR couldn't start at all for this run (unusual - browser support
-      // issue, or the vendored assets failed to load). Fall back to the
-      // manual tap overlay for this one photo rather than silently
-      // fabricating a number; its own confirm/cancel handlers advance the
-      // guided sequence once the operator finishes with it.
-      setMeasureState({ photoNumber, objectUrl: URL.createObjectURL(file) });
+      // OCR couldn't start for this photo (unusual - browser support issue,
+      // or the vendored assets failed to load). Fall back to the manual
+      // tap overlay for this one photo rather than silently fabricating a
+      // number; its own confirm/cancel handlers advance the guided
+      // sequence once the operator finishes with it.
+      setMeasureState({ photoNumber, objectUrl: URL.createObjectURL(file), autoFailed: true });
       return;
     }
 
@@ -358,7 +372,7 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
   function openStandaloneMeasure(photoNumber: PhotoNumber) {
     const photo = photos[photoNumber];
     if (!photo) return;
-    setMeasureState({ photoNumber, objectUrl: URL.createObjectURL(photo.blob) });
+    setMeasureState({ photoNumber, objectUrl: URL.createObjectURL(photo.blob), autoFailed: false });
   }
 
   function advanceGuidedCapture(justFinishedPhoto: PhotoNumber) {
@@ -368,9 +382,9 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
       triggerGuidedCapture(next);
     } else {
       setGuidedCaptureActive(false);
-      const workerPromise = ocrWorkerPromiseRef.current;
-      ocrWorkerPromiseRef.current = null;
-      void workerPromise?.then((worker) => worker?.terminate()).catch(() => {});
+      const worker = ocrWorkerRef.current;
+      ocrWorkerRef.current = null;
+      worker?.terminate().catch(() => {});
     }
   }
 
@@ -754,6 +768,7 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
         <TapMeasureOverlay
           photoUrl={measureState.objectUrl}
           photoLabel={`Photo ${measureState.photoNumber}`}
+          note={measureState.autoFailed ? "Couldn't read this one automatically - tap instead" : undefined}
           calibrationLengthMm={job?.rulerLengthMm ?? DEFAULT_RULER_LENGTH_MM}
           onConfirm={handleMeasureConfirm}
           onCancel={handleMeasureCancel}
