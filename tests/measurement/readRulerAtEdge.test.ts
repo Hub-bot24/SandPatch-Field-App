@@ -52,6 +52,14 @@ describe("readMmAtEdge", () => {
     expect(readMmAtEdge(tokens, 75, LINE_Y, Y_TOLERANCE)).toBeNull();
   });
 
+  it("ignores a single-digit number even at high confidence with an otherwise-plausible bracket", () => {
+    // A stray "4" from background texture, confirmed against a real photo:
+    // high confidence, a plausible implied scale against the genuine 100,
+    // and it would otherwise have produced a fabricated measurement.
+    const tokens = [token(100, 60), token(4, 90)];
+    expect(readMmAtEdge(tokens, 75, LINE_Y, Y_TOLERANCE)).toBeNull();
+  });
+
   it("returns null when both bracketing numbers show the same value (nothing to interpolate)", () => {
     const tokens = [token(20, 60), token(20, 90)];
     expect(readMmAtEdge(tokens, 75, LINE_Y, Y_TOLERANCE)).toBeNull();

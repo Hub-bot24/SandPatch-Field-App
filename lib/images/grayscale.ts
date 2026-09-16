@@ -12,13 +12,13 @@ export interface GrayscaleImageResult {
   image: GrayscaleImage;
   /**
    * How much smaller `image` is than the original photo (analysis width /
-   * original width, <= 1). `pixelsPerMm` from camera calibration is always
-   * in the *original* photo's pixel scale (see
-   * components/photo/CameraCalibrationOverlay.tsx and
-   * lib/measurement/ocrRuler.ts, neither of which downsample before
-   * measuring) - callers must multiply `pixelsPerMm` by this scale before
-   * passing it to detectPatchDiameter, or every distance will be
-   * miscalculated by roughly (original size / analysis size).
+   * original width, <= 1). Edge positions detectPatchEdges finds are in
+   * this downsampled image's pixel space, but the ruler numbers OCR reads
+   * (lib/measurement/ocrRuler.ts) come from the original, full-resolution
+   * photo - callers must divide an edge's pixel position by this scale
+   * before matching it against those numbers' positions (see
+   * lib/measurement/measurePatch.ts), or every match will land on the
+   * wrong part of the photo by roughly (original size / analysis size).
    */
   scale: number;
 }
