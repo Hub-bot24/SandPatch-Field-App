@@ -610,10 +610,20 @@ export function SandPatchRecordForm({ recordId: initialRecordId }: { recordId?: 
               : "Capturing…"
             : "Take All 4 Photos"}
         </Button>
+        {/*
+          Guided capture is the primary field flow: standing at the patch,
+          taking four fresh photos back to back, as fast as possible.
+          capture="environment" jumps straight to the rear camera with no
+          intermediate OS chooser - restoring that directness matters more
+          here than library access does, since re-testing with an
+          already-taken photo is what the four individual Photo 1-4 slots
+          below (PhotoCaptureSlot, no capture attribute) are for.
+        */}
         <input
           ref={guidedInputRef}
           type="file"
           accept="image/*"
+          capture="environment"
           className="hidden"
           aria-label="Guided capture"
           onChange={handleGuidedFileChange}
