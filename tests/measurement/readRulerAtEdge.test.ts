@@ -46,10 +46,27 @@ describe("readMmAtEdge", () => {
     expect(readMmAtEdge(tokens, 75, LINE_Y, Y_TOLERANCE)).toBeCloseTo(25, 6);
   });
 
-  it("returns null when the bracketing pair's implied scale is implausible (a likely misread)", () => {
-    // 2px apart claiming a 495mm difference -> ~0.004 px/mm, far outside plausible range.
-    const tokens = [token(5, 74), token(500, 76)];
+  it("returns null when the nearest pair's implied scale is implausible (a likely misread)", () => {
+    // 2px apart claiming a 490mm difference -> ~0.004 px/mm, far outside plausible range.
+    const tokens = [token(10, 74), token(500, 76)];
     expect(readMmAtEdge(tokens, 75, LINE_Y, Y_TOLERANCE)).toBeNull();
+  });
+
+  it("extrapolates from the nearest pair when both fall on the same side of the edge", () => {
+    // Confirmed necessary against a real photo: the two numbers OCR
+    // actually read were both well to one side of the detected edge,
+    // with nothing legible bracketing it directly.
+    const tokens = [token(29, 337), token(100, 825)];
+    // Scale: (825-337)/(100-29) = 6.873px/mm. At edgeX=206 (left of both,
+    // within the 3x extrapolation cap): 29 + (206-337)/6.873 ~= 9.9mm.
+    expect(readMmAtEdge(tokens, 206, LINE_Y, Y_TOLERANCE)).toBeCloseTo(9.94, 1);
+  });
+
+  it("returns null when the edge is past the extrapolation cap for the nearest pair", () => {
+    // Same real-scale pair as above, but placed 4x their own separation
+    // past the nearer one - beyond MAX_EXTRAPOLATION_FACTOR (3x).
+    const tokens = [token(29, 337), token(100, 825)];
+    expect(readMmAtEdge(tokens, 337 - 488 * 4, LINE_Y, Y_TOLERANCE)).toBeNull();
   });
 
   it("ignores a single-digit number even at high confidence with an otherwise-plausible bracket", () => {

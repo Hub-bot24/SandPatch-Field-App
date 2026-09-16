@@ -9,12 +9,26 @@
  * so nothing about how the camera was held on any other photo matters.
  *
  * A patch edge essentially never lands exactly on a printed number, so
- * this finds the two nearest numbers that bracket the edge (one on each
- * side) and linearly interpolates between them - the same small mental
- * step a person takes when a measurement falls, say, two-thirds of the
- * way between the "150" and "160" marks. Numbers may increase or decrease
- * left-to-right in the photo (the ruler could be laid down either way);
- * the interpolation is direction-agnostic.
+ * this finds the two nearest recognized numbers and linearly interpolates
+ * or extrapolates between them - the same small mental step a person
+ * takes when a measurement falls, say, two-thirds of the way between the
+ * "150" and "160" marks. Numbers may increase or decrease left-to-right
+ * in the photo (the ruler could be laid down either way); the calculation
+ * is direction-agnostic.
+ *
+ * This does not require the two numbers to bracket the edge (one on each
+ * side) - the nearest two confidently-read numbers *anywhere* nearby are
+ * used, even if both fall on the same side. Confirmed necessary against
+ * real photos: the sand patch itself sits over the ruler, so the numbers
+ * OCR actually manages to read are scattered wherever they happen to be
+ * legible, not conveniently placed right next to each detected edge -
+ * requiring a strict bracket left every one of several real test photos
+ * unmeasured even when the ruler's numbers elsewhere were read cleanly
+ * and precisely. Extrapolating a short distance from the closest reliable
+ * pair recovers those. `MAX_EXTRAPOLATION_FACTOR` bounds how far past
+ * that pair this will reach, since projecting a local scale over a long
+ * distance amplifies any perspective distortion or misread far more than
+ * interpolating between two points that straddle the edge does.
  */
 
 import type { RulerNumberToken } from "./ocrRuler";
@@ -40,17 +54,20 @@ const MIN_PLAUSIBLE_PX_PER_MM = 0.1;
 const MAX_PLAUSIBLE_PX_PER_MM = 50;
 /** How far (as a fraction of the photo's height) a ruler number may sit from the scanned band and still count as "on the same line" as the edge - generous, since a ruler has physical width and printed numbers sit somewhere across it, not exactly on the scanned centerline. */
 const Y_TOLERANCE_FRACTION = 0.25;
+/** How far past the anchor pair this will extrapolate, as a multiple of the pixel distance between them - a small multiple, since projecting a two-point local scale a long way past where it was actually measured is exactly how a lens/perspective quirk or a borderline misread turns into a confidently wrong answer instead of an obviously wrong one. */
+const MAX_EXTRAPOLATION_FACTOR = 3;
 
 /**
- * Finds the exact millimetre value at pixel column `edgeX`, by locating
- * the two recognized ruler numbers immediately bracketing it (one with
- * x <= edgeX, one with x >= edgeX, both within `maxYDistance` of
- * `lineY`) and interpolating linearly between them. Returns null - never
- * a guess - when no such bracketing pair exists (the edge is beyond the
- * ruler's legible numbers on one side, or nothing nearby was read
- * confidently), when both bracketing numbers show the same printed value
- * (nothing to interpolate between), or when their implied local scale is
- * implausible (a strong sign at least one is a misread).
+ * Finds the exact millimetre value at pixel column `edgeX`, using the two
+ * recognized ruler numbers nearest to it (within `maxYDistance` of
+ * `lineY`) and interpolating or extrapolating linearly between them - see
+ * this file's header for why a strict bracket (one on each side) isn't
+ * required. Returns null - never a guess - when fewer than two numbers
+ * were read nearby, when the two nearest show the same printed value
+ * (nothing to project a scale from), when their implied local scale is
+ * implausible (a strong sign at least one is a misread), or when `edgeX`
+ * is more than `MAX_EXTRAPOLATION_FACTOR` times their own separation
+ * beyond them.
  */
 export function readMmAtEdge(
   tokens: RulerNumberToken[],
@@ -67,17 +84,16 @@ export function readMmAtEdge(
       Number.isFinite(t.y) &&
       Math.abs(t.y - lineY) <= maxYDistance,
   );
+  if (candidates.length === 0) return null;
 
-  let left: RulerNumberToken | null = null;
-  let right: RulerNumberToken | null = null;
-  for (const t of candidates) {
-    if (t.x <= edgeX && (!left || t.x > left.x)) left = t;
-    if (t.x >= edgeX && (!right || t.x < right.x)) right = t;
-  }
-  if (!left || !right) return null;
-  if (left === right) return left.value;
-  if (left.value === right.value) return null;
+  const byDistanceToEdge = candidates.slice().sort((a, b) => Math.abs(a.x - edgeX) - Math.abs(b.x - edgeX));
+  const anchor = byDistanceToEdge[0];
+  if (anchor.x === edgeX) return anchor.value;
 
+  const partner = byDistanceToEdge.slice(1).find((t) => t.value !== anchor.value && t.x !== anchor.x);
+  if (!partner) return null;
+
+  const [left, right] = anchor.x < partner.x ? [anchor, partner] : [partner, anchor];
   const pixelSpan = right.x - left.x;
   if (pixelSpan <= 0) return null;
 
@@ -89,6 +105,9 @@ export function readMmAtEdge(
   ) {
     return null;
   }
+
+  const extrapolationDistance = Math.max(0, left.x - edgeX, edgeX - right.x);
+  if (extrapolationDistance > pixelSpan * MAX_EXTRAPOLATION_FACTOR) return null;
 
   const t = (edgeX - left.x) / pixelSpan;
   return left.value + t * (right.value - left.value);

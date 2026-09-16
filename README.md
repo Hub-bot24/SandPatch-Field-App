@@ -178,25 +178,41 @@ nearly bracketed into a fabricated measurement before this guard existed.
 **3. Reading each edge directly off those numbers** -
 `lib/measurement/readRulerAtEdge.ts`'s `readDiameterFromEdges()` is the
 step that replaces calibration entirely: for each detected edge, it finds
-the two recognized ruler numbers immediately bracketing it (one on each
-side, confidently recognized, on the same line as the edge) and linearly
-interpolates the exact millimetre value at that pixel - the digital
-equivalent of a person reading the ruler mark nearest where the patch
-ends and mentally splitting the small remaining gap, rather than
-computing an abstract pixels-per-mm ratio and applying it elsewhere. This
-mirrors, digitally, the same problem a second ruler solves by hand at a
-fuzzy patch edge - turning an inherently unclear boundary into one
-specific, exact point to read. Numbers may increase or decrease
-left-to-right (the ruler could be laid down either way); the
-interpolation is direction-agnostic. The diameter is simply the
+the two recognized ruler numbers nearest to it (confidently recognized,
+on the same line as the edge) and linearly interpolates - or
+extrapolates - the exact millimetre value at that pixel from them, the
+same small mental step a person takes reading a measurement that falls
+between two ruler marks.
+
+This does **not** require the two numbers to fall one on each side of the
+edge. Earlier versions did, on the reasoning that it mirrors, digitally,
+the same problem a second ruler solves by hand at a fuzzy patch edge -
+turning an inherently unclear boundary into one specific point to read.
+That reasoning missed something a strict bracket requirement doesn't
+handle: the sand patch itself sits over the ruler, so the numbers OCR
+actually manages to read are scattered wherever they happen to be
+legible in a given photo, not conveniently placed right next to each
+detected edge. Requiring a strict bracket left real test photos
+unmeasured even when the ruler's numbers *were* read cleanly elsewhere in
+frame - confirmed directly: switching to "nearest two, whichever side
+they're on" recovered a real measurement from a real photo that a strict
+bracket left blank, with the extrapolated value landing well within a
+plausible range for a real patch. `MAX_EXTRAPOLATION_FACTOR` (3x the
+found pair's own pixel separation) bounds how far past them this will
+reach, since projecting a two-point local scale a long way past where it
+was actually measured turns a lens quirk or a borderline misread into a
+confidently wrong answer instead of an obviously wrong one. Numbers may
+increase or decrease left-to-right (the ruler could be laid down either
+way); the calculation is direction-agnostic. The diameter is simply the
 difference between the two edges' millimetre readings.
 
 A result is only ever `null` - never a guess - when an edge itself isn't
-clear enough to trust (a blank or fully-uniform photo), or when the
-ruler's numbers can't be read confidently enough near an edge to bracket
-it (the edge is beyond the ruler's legible numbers, or nothing nearby was
-read confidently); the diameter field is simply left empty for manual
-entry rather than a fabricated number appearing. `detectPatchEdges()`
+clear enough to trust (a blank or fully-uniform photo), when fewer than
+two numbers were read confidently enough near an edge's line to compute a
+scale from, or when reaching the edge from the nearest such pair would
+mean extrapolating too far past them to trust; the diameter field is
+simply left empty for manual entry rather than a fabricated number
+appearing. `detectPatchEdges()`
 scans a downsampled (400px) copy of the photo for speed, while OCR reads
 the numbers from the original, full-resolution photo (small print needs
 real resolution to stay legible) - `lib/images/grayscale.ts`'s
@@ -479,19 +495,24 @@ serves from its own root).
   camera. None of this is silent: every reading is shown on-screen
   immediately, and "Measure from Photo" is always available to override a
   reading, or supply one, by hand.
-- **Reading the ruler twice (standard + red-isolated, above) and tuning
-  OCR's page-segmentation mode measurably improved both speed and how
-  much of a real ruler gets read - but did not make automatic measurement
-  reliable on every real photo, and won't.** Tested directly against real
-  field photos: edge detection can succeed while OCR still doesn't find
-  legible numbers bracketing *both* sides of a given edge - it found only
-  one real number on one side of the patch in one photo, and none at all
-  near either edge in another with harsh shadow cutting across the ruler
-  and glare off the metal. Both correctly fell back to an empty field
-  rather than guessing, which is the point of the `null`-not-a-guess
-  design - but it means manual tap-to-measure is a real, expected part of
-  a job, not a rare exception, until a photo's ruler happens to have
-  enough legible numbers positioned on both sides of the patch.
+- **Reading the ruler twice (standard + red-isolated), tuning OCR's
+  page-segmentation mode, and reading the nearest numbers instead of
+  requiring a strict bracket (all above) measurably improved automatic
+  measurement - but it is not reliable on every real photo, and no
+  camera-based reading of a ruler outdoors realistically can be.** Tested
+  directly against six real field photos (not synthetic test images)
+  across two separate real patches: two produced a plausible automatic
+  reading; the other four correctly fell back to an empty field rather
+  than guessing, because OCR read fewer than two confident numbers
+  anywhere near that photo's edges - no amount of interpolation or
+  extrapolation math has anything to compute from at that point. One of
+  the four had harsh shadow cutting across the ruler and glare off the
+  metal; the other three simply didn't have enough of the ruler's print
+  read confidently despite reasonable framing. This is the honest current
+  ceiling: manual tap-to-measure is a real, expected part of a job, not a
+  rare exception, and every reading - automatic or not - is shown
+  on-screen immediately with "Measure from Photo" always available to
+  override or supply one by hand.
 - **Tesseract.js's OCR is CPU-bound and single-threaded in this setup.**
   Measured directly against real ruler photos (not a synthetic test
   image) in a desktop browser: a single full-resolution pass with
