@@ -89,7 +89,7 @@ types/                Job, SandPatchRecord, PhotoRecord, measurement types
 tests/                Vitest unit tests
 public/sw.js          Hand-rolled service worker (no next-pwa/Workbox)
 public/vendor/         Vendored OCR assets (Tesseract.js worker/core/trained-data) - never CDN-fetched
-scripts/              One-off dev utility: generates the placeholder PNG/ICO icons
+scripts/              Icon generation (one-off) + build-version stamping (every install/dev/build)
 ```
 
 Every `SandPatchRecord` has a UUID `id`, `createdAt`, `updatedAt`. Every
@@ -312,6 +312,20 @@ and, outside of `localhost`, HTTPS.
 The production build is a full static export (`output: "export"` in
 `next.config.ts`) - no Node server is required to run the app; `out/` can be
 served by any static file host.
+
+### Knowing which build is running
+
+Every screen's header shows the build's date/time and short git commit
+(e.g. "16 Sep 02:35 UTC · cd15273") - the whole point is being able to
+tell "is this the latest app?" at a glance, without guessing from a
+screenshot. `scripts/generate-version.mjs` writes this into
+`lib/version.generated.json` (gitignored - a committed value would go
+stale the moment another commit is made) from the current git commit and
+timestamp; it runs automatically via `postinstall`, `predev`, and
+`prebuild` in `package.json`, so every real dev/build/CI path always has
+a fresh, correct value with nothing to configure. If git isn't available
+at build time (e.g. building from a source tarball with no `.git`
+directory), the badge falls back to showing just the build time.
 
 ## Deploying to GitHub
 
