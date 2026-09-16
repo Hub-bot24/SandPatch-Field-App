@@ -16,6 +16,7 @@
     "generate-icons": "node scripts/generate-icons.mjs"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.3.0",
     "exceljs": "^4.4.0",
     "idb": "^8.0.3",
     "jszip": "^3.10.2",
