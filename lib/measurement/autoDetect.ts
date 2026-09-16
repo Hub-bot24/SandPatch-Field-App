@@ -46,6 +46,19 @@ export interface DetectedEdges {
 const BAND_FRACTION = 0.16;
 /** Minimum brightness change (0-255 scale) between adjacent columns to trust as a real edge rather than noise. */
 const MIN_EDGE_MAGNITUDE = 6;
+/**
+ * Fraction of the profile's width, at each extreme end, excluded from
+ * being the detected edge itself - a well-composed patch photo never has
+ * the patch running flush to the very edge of frame, so a "steepest
+ * change" right at column 0 or the last column is a boundary artifact
+ * (a crop line, vignetting, a lens-distortion falloff), not the patch.
+ * Confirmed directly: without this margin, a hard cut introduced by
+ * cropping a photo (not even a deliberate test - an accidental crop
+ * boundary) beat the true, only slightly less sharp sand/background
+ * transition and was reported as "the edge" spanning almost the entire
+ * frame.
+ */
+const FRAME_MARGIN_FRACTION = 0.03;
 
 /** Averages a horizontal band of rows, centred vertically, into one brightness value per column. */
 function buildHorizontalProfile(image: GrayscaleImage): number[] {
@@ -136,9 +149,10 @@ export function detectPatchEdges(image: GrayscaleImage): DetectedEdges | null {
 
   const profile = buildHorizontalProfile(image);
   const mid = Math.floor(profile.length / 2);
+  const margin = Math.round(profile.length * FRAME_MARGIN_FRACTION);
 
-  const leftPeak = findSteepestEdge(profile, 0, mid);
-  const rightPeak = findSteepestEdge(profile, mid, profile.length);
+  const leftPeak = findSteepestEdge(profile, margin, mid);
+  const rightPeak = findSteepestEdge(profile, mid, profile.length - margin);
   if (!leftPeak || !rightPeak) return null;
   if (leftPeak.magnitude < MIN_EDGE_MAGNITUDE || rightPeak.magnitude < MIN_EDGE_MAGNITUDE) return null;
   if (rightPeak.index <= leftPeak.index) return null;
